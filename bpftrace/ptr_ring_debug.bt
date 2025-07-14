@@ -1,0 +1,163 @@
+#!/usr/bin/env bpftrace
+/*
+ * ptr_ring_debug.bt - Quick debug script for TUN ptr_ring issues
+ *
+ * This bpftrace script monitors ptr_ring operations to help diagnose
+ * cases where queue 0 ptr_ring shows all zeros.
+ *
+ * Usage: sudo bpftrace ptr_ring_debug.bt
+ */
+
+BEGIN {
+    printf("Monitoring TUN ptr_ring operations...\n");
+    printf("Time     Event           PID    Comm             Details\n");
+    printf("-------- --------------- ------ ---------------- ------------------\n");
+}
+
+/* Monitor tun_net_xmit - packets entering TUN */
+kprobe:tun_net_xmit {
+    @tun_xmit_calls = count();
+    printf("%s %-15s %6d %-16s skb_len=%d queue_mapping=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           "TUN_NET_XMIT",
+           pid,
+           comm,
+           ((struct sk_buff *)arg0)->len,
+           ((struct sk_buff *)arg0)->queue_mapping);
+}
+
+/* Monitor ptr_ring_produce - packets being queued */
+kprobe:__ptr_ring_produce {
+    $ring = (struct ptr_ring *)arg0;
+    @produce_calls = count();
+    @ring_addresses[arg0] = count();
+    
+    printf("%s %-15s %6d %-16s ring=0x%lx size=%d producer=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           "PTR_RING_PROD",
+           pid,
+           comm,
+           arg0,
+           $ring->size,
+           $ring->producer);
+}
+
+/* Monitor ptr_ring_produce return values */
+kretprobe:__ptr_ring_produce {
+    @produce_returns[retval] = count();
+    
+    if (retval != 0) {
+        printf("%s %-15s %6d %-16s FAILED ret=%d\n",
+               strftime("%H:%M:%S", nsecs),
+               "PTR_RING_PROD",
+               pid,
+               comm,
+               retval);
+    }
+}
+
+/* Monitor ptr_ring_consume - packets being dequeued */
+kprobe:__ptr_ring_consume {
+    $ring = (struct ptr_ring *)arg0;
+    @consume_calls = count();
+    
+    printf("%s %-15s %6d %-16s ring=0x%lx size=%d consumer_head=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           "PTR_RING_CONS",
+           pid,
+           comm,
+           arg0,
+           $ring->size,
+           $ring->consumer_head);
+}
+
+/* Monitor tun_ring_recv - vhost-net reading from TUN */
+kprobe:tun_ring_recv {
+    @tun_recv_calls = count();
+    printf("%s %-15s %6d %-16s noblock=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           "TUN_RING_RECV",
+           pid,
+           comm,
+           arg1);
+}
+
+/* Monitor vhost worker activity */
+kprobe:vhost_worker {
+    @vhost_worker_calls = count();
+    printf("%s %-15s %6d %-16s vhost_dev=0x%lx\n",
+           strftime("%H:%M:%S", nsecs),
+           "VHOST_WORKER",
+           pid,
+           comm,
+           arg0);
+}
+
+/* Monitor handle_tx calls */
+kprobe:handle_tx* {
+    @handle_tx_calls[probe] = count();
+    printf("%s %-15s %6d %-16s function=%s\n",
+           strftime("%H:%M:%S", nsecs),
+           "HANDLE_TX",
+           pid,
+           comm,
+           probe);
+}
+
+/* Check for queue stalls every 5 seconds */
+interval:s:5 {
+    printf("\n=== QUEUE STATISTICS ===\n");
+    printf("TUN xmit calls: %d\n", @tun_xmit_calls);
+    printf("PTR ring produce calls: %d\n", @produce_calls);
+    printf("PTR ring consume calls: %d\n", @consume_calls);
+    printf("TUN recv calls: %d\n", @tun_recv_calls);
+    printf("Vhost worker calls: %d\n", @vhost_worker_calls);
+    
+    printf("\nProduce return values:\n");
+    print(@produce_returns);
+    
+    printf("\nHandle TX calls:\n");
+    print(@handle_tx_calls);
+    
+    printf("\nActive ptr_ring addresses:\n");
+    print(@ring_addresses);
+    
+    printf("========================\n\n");
+}
+
+/* Detect potential stalls */
+interval:s:10 {
+    if (@produce_calls > 0 && @consume_calls == 0) {
+        printf("WARNING: Packets being produced but not consumed!\n");
+    }
+    
+    if (@tun_xmit_calls > 0 && @produce_calls == 0) {
+        printf("WARNING: TUN transmit but no ptr_ring produce!\n");
+    }
+    
+    if (@produce_returns[-28] > 0) {  // -ENOSPC
+        printf("WARNING: %d ptr_ring produce failures (queue full)!\n", 
+               @produce_returns[-28]);
+    }
+}
+
+END {
+    printf("\n=== FINAL STATISTICS ===\n");
+    printf("TUN xmit calls: %d\n", @tun_xmit_calls);
+    printf("PTR ring produce calls: %d\n", @produce_calls);
+    printf("PTR ring consume calls: %d\n", @consume_calls);
+    printf("TUN recv calls: %d\n", @tun_recv_calls);
+    printf("Vhost worker calls: %d\n", @vhost_worker_calls);
+    
+    printf("\nProduce return values:\n");
+    print(@produce_returns);
+    
+    clear(@tun_xmit_calls);
+    clear(@produce_calls);
+    clear(@consume_calls);
+    clear(@tun_recv_calls);
+    clear(@vhost_worker_calls);
+    clear(@produce_returns);
+    clear(@handle_tx_calls);
+    clear(@ring_addresses);
+}

@@ -1,0 +1,277 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * virtio-rx-debug.bt - Quick diagnostic tool for virtio-net RX queues
+ *
+ * This script monitors virtio-net RX activity from inside the VM to help
+ * diagnose queue 0 issues and load balance problems.
+ *
+ * Usage: sudo bpftrace virtio-rx-debug.bt
+ */
+
+BEGIN {
+    printf("🔍 virtio-net RX Queue Diagnostic Tool\n");
+    printf("Monitoring packet reception and queue balance in VM...\n");
+    printf("Press Ctrl+C to stop\n\n");
+    printf("%-12s %-8s %-8s %-6s %-8s %-12s\n",
+           "TIME", "DEV", "QUEUE", "CPU", "TYPE", "DETAILS");
+}
+
+// Monitor packet reception through netif_receive_skb
+kprobe:netif_receive_skb {
+    $skb = (struct sk_buff *)arg0;
+    if (!$skb || !$skb->dev) { return; }
+    
+    $dev_name = str($skb->dev->name);
+    
+    // Filter for ethernet devices (virtio-net appears as ethX in VMs)
+    if (!str($dev_name, 3) == "eth") { return; }
+    
+    $queue_id = $skb->queue_mapping;
+    $cpu = cpu;
+    $len = $skb->len;
+    
+    printf("%-12s %-8s Q%-7d %-6d %-8s len=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           $dev_name,
+           $queue_id,
+           $cpu,
+           "PKT_RX",
+           $len);
+           
+    // Track statistics
+    @queue_packets[$queue_id] = count();
+    @queue_bytes[$queue_id] = sum($len);
+    @queue_cpu_usage[$queue_id, $cpu] = count();
+    @device_activity[$dev_name] = count();
+    @cpu_activity[$cpu] = count();
+}
+
+// Monitor NAPI polling activity
+kprobe:virtnet_poll {
+    $cpu = cpu;
+    $budget = arg1;
+    
+    printf("%-12s %-8s %-8s %-6d %-8s budget=%d\n",
+           strftime("%H:%M:%S", nsecs),
+           "N/A",
+           "NAPI",
+           $cpu,
+           "POLL_IN",
+           $budget);
+           
+    @napi_polls = count();
+    @napi_cpu_usage[$cpu] = count();
+}
+
+kretprobe:virtnet_poll {
+    $cpu = cpu;
+    $received = retval;
+    
+    if ($received > 0) {
+        printf("%-12s %-8s %-8s %-6d %-8s received=%d\n",
+               strftime("%H:%M:%S", nsecs),
+               "N/A", 
+               "NAPI",
+               $cpu,
+               "POLL_OUT",
+               $received);
+    }
+    
+    @napi_received = sum($received);
+}
+
+// Monitor software interrupt activity for load distribution
+kprobe:do_softirq {
+    $cpu = cpu;
+    @softirq_count[$cpu] = count();
+}
+
+// Track any packet drops
+kprobe:kfree_skb {
+    $skb = (struct sk_buff *)arg0;
+    if (!$skb || !$skb->dev) { return; }
+    
+    $dev_name = str($skb->dev->name);
+    if (!str($dev_name, 3) == "eth") { return; }
+    
+    $queue_id = $skb->queue_mapping;
+    
+    printf("%-12s %-8s Q%-7d %-6d %-8s reason=drop\n",
+           strftime("%H:%M:%S", nsecs),
+           $dev_name,
+           $queue_id,
+           cpu,
+           "DROP");
+           
+    @drops_by_queue[$queue_id] = count();
+    @total_drops = count();
+}
+
+// Periodic summary every 10 seconds
+interval:s:10 {
+    time();
+    printf("\n📊 Activity Summary (last 10s):\n");
+    
+    if (@queue_packets) {
+        printf("RX Packets by Queue:\n");
+        print(@queue_packets);
+        
+        // Check for queue 0 issues
+        $q0_packets = @queue_packets[0];
+        $total_queues = 0;
+        $active_queues = 0;
+        
+        // Count active queues
+        map(@queue_packets) {
+            $total_queues++;
+            if ($2 > 0) { $active_queues++; }
+        }
+        
+        if ($total_queues > 1 && $q0_packets == 0 && $active_queues > 0) {
+            printf("🚨 WARNING: Queue 0 inactive while other queues are active!\n");
+            printf("   This indicates the queue 0 issue is present.\n");
+        }
+        
+        clear(@queue_packets);
+    }
+    
+    if (@queue_bytes) {
+        printf("RX Bytes by Queue:\n");
+        print(@queue_bytes);
+        clear(@queue_bytes);
+    }
+    
+    if (@drops_by_queue) {
+        printf("Drops by Queue:\n");
+        print(@drops_by_queue);
+        clear(@drops_by_queue);
+    }
+    
+    if (@cpu_activity) {
+        printf("CPU Activity Distribution:\n");
+        print(@cpu_activity);
+        clear(@cpu_activity);
+    }
+    
+    printf("NAPI: polls=%d received=%d softirq_total=%d drops=%d\n",
+           @napi_polls, @napi_received, 
+           @softirq_count[@softirq_count], @total_drops);
+    
+    clear(@napi_polls);
+    clear(@napi_received);
+    clear(@softirq_count);
+    clear(@total_drops);
+    
+    printf("\n");
+}
+
+// Check for long periods without activity (potential hanging)
+interval:s:5 {
+    $now = nsecs;
+    if (@last_activity > 0 && ($now - @last_activity) > 5000000000) {
+        printf("⚠️  No packet activity for >5s - possible queue hang\n");
+    }
+}
+
+// Update last activity timestamp on any packet
+kprobe:netif_receive_skb {
+    @last_activity = nsecs;
+}
+
+// Look for CPU affinity issues
+interval:s:15 {
+    if (@queue_cpu_usage) {
+        printf("\n💻 Queue CPU Affinity Analysis:\n");
+        
+        // Check if queues are properly distributed across CPUs
+        $max_cpu_for_queue = 0;
+        $queue_cpu_counts = 0;
+        
+        map(@queue_cpu_usage) {
+            $queue = $1;
+            $cpu = $2; 
+            $count = $3;
+            
+            printf("Q%d -> CPU%d: %d packets\n", $queue, $cpu, $count);
+            
+            if ($count > $max_cpu_for_queue) {
+                $max_cpu_for_queue = $count;
+            }
+            $queue_cpu_counts++;
+        }
+        
+        // Simple heuristic for CPU affinity issues
+        if ($queue_cpu_counts > 0 && $max_cpu_for_queue > 100) {
+            printf("💡 CPU affinity appears to be working\n");
+        } else if ($queue_cpu_counts == 0) {
+            printf("❓ No CPU affinity data available\n");
+        }
+        
+        clear(@queue_cpu_usage);
+        printf("\n");
+    }
+}
+
+// Track interrupt patterns
+kprobe:handle_irq {
+    $irq = arg0;
+    @irq_count[$irq] = count();
+}
+
+interval:s:20 {
+    if (@irq_count) {
+        printf("🔔 Top IRQ Sources (last 20s):\n");
+        print(@irq_count, 5);  // Show top 5
+        clear(@irq_count);
+        printf("\n");
+    }
+}
+
+END {
+    printf("\n🏁 virtio-net RX monitoring stopped.\n");
+    printf("Final Statistics:\n");
+    
+    if (@device_activity) {
+        printf("Total activity by device:\n");
+        print(@device_activity);
+    }
+    
+    if (@queue_packets) {
+        printf("Final packet counts by queue:\n");
+        print(@queue_packets);
+        
+        // Final queue 0 analysis
+        $q0_final = @queue_packets[0];
+        $other_queues_active = 0;
+        
+        map(@queue_packets) {
+            if ($1 != 0 && $2 > 0) {
+                $other_queues_active = 1;
+            }
+        }
+        
+        if ($q0_final == 0 && $other_queues_active) {
+            printf("\n🚨 FINAL DIAGNOSIS: Queue 0 Issue Confirmed!\n");
+            printf("   - Queue 0 received no packets\n");
+            printf("   - Other queues were active\n");
+            printf("   - This confirms the vhost-net queue 0 problem\n");
+            printf("   - Correlate with host-side vhost_net_monitor.py results\n");
+        } else if ($q0_final > 0) {
+            printf("\n✅ Queue 0 appears to be functioning normally\n");
+        } else {
+            printf("\n❓ No significant queue activity detected\n");
+        }
+    }
+    
+    if (@napi_cpu_usage) {
+        printf("NAPI CPU distribution:\n");
+        print(@napi_cpu_usage);
+    }
+    
+    printf("\nAnalysis Tips:\n");
+    printf("- Compare queue activity with host-side monitoring\n");
+    printf("- Check if queue 0 inactivity correlates with ptr_ring issues\n");
+    printf("- Monitor CPU affinity and interrupt distribution\n");
+    printf("- Look for patterns in packet drops and NAPI scheduling\n");
+}

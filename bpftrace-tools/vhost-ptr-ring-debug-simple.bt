@@ -1,0 +1,125 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * vhost-ptr-ring-debug-simple.bt - Simplified diagnostic tool for old bpftrace
+ *
+ * Compatible with older bpftrace versions that don't support regex
+ */
+
+BEGIN {
+    printf("🔍 vhost-net Activity Monitor (Simple Version)\n");
+    printf("Monitoring TUN/vhost activity for queue issues...\n");
+    printf("Press Ctrl+C to stop\n\n");
+}
+
+// Monitor TUN transmit to capture queue context
+kprobe:tun_net_xmit {
+    $skb = (struct sk_buff *)arg0;
+    $dev = (struct net_device *)arg1;
+    $queue_mapping = $skb->queue_mapping;
+    
+    printf("%s: %s tun_net_xmit Q%d dev=%s\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           $queue_mapping,
+           str($dev->name));
+           
+    @queue_tx_count[$queue_mapping] = count();
+    @device_activity[str($dev->name)] = count();
+}
+
+// Monitor TUN receive
+kprobe:tun_recvmsg {
+    printf("%s: %s tun_recvmsg\n",
+           strftime("%H:%M:%S", nsecs),
+           comm);
+           
+    @recvmsg_calls = count();
+}
+
+// Monitor available ptr_ring function
+kprobe:tap_get_ptr_ring {
+    printf("%s: %s tap_get_ptr_ring\n",
+           strftime("%H:%M:%S", nsecs),
+           comm);
+           
+    @ptr_ring_access = count();
+}
+
+// Monitor specific vhost handle_tx variants 
+kprobe:handle_tx_net {
+    printf("%s: %s handle_tx_net\n",
+           strftime("%H:%M:%S", nsecs),
+           comm);
+           
+    @vhost_worker_activity = count();
+}
+
+kprobe:handle_tx_copy {
+    printf("%s: %s handle_tx_copy\n",
+           strftime("%H:%M:%S", nsecs),
+           comm);
+           
+    @vhost_worker_activity = count();
+}
+
+// Monitor packet drops
+kprobe:kfree_skb {
+    $skb = (struct sk_buff *)arg0;
+    printf("%s: %s kfree_skb Q%d\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           $skb->queue_mapping);
+           
+    @drops_by_queue[$skb->queue_mapping] = count();
+    @total_drops = count();
+}
+
+// Monitor TCP connection tracking
+kprobe:tcp_packet {
+    printf("%s: %s tcp_packet\n",
+           strftime("%H:%M:%S", nsecs),
+           comm);
+           
+    @ct_activity = count();
+}
+
+// Periodic summary every 10 seconds
+interval:s:10 {
+    time();
+    printf("\n📊 Activity Summary (last 10s):\n");
+    
+    if (@queue_tx_count) {
+        printf("TX Activity by Queue:\n");
+        print(@queue_tx_count);
+        clear(@queue_tx_count);
+    }
+    
+    if (@drops_by_queue) {
+        printf("Drops by Queue:\n");
+        print(@drops_by_queue);
+        clear(@drops_by_queue);
+    }
+    
+    printf("Totals: recvmsg=%d ptr_ring=%d vhost_worker=%d ct=%d drops=%d\n",
+           @recvmsg_calls, @ptr_ring_access, @vhost_worker_activity, 
+           @ct_activity, @total_drops);
+    
+    clear(@recvmsg_calls);
+    clear(@ptr_ring_access);
+    clear(@vhost_worker_activity);
+    clear(@ct_activity);
+    clear(@total_drops);
+    
+    printf("\n");
+}
+
+END {
+    printf("\n🏁 Monitoring stopped.\n");
+    printf("Final Statistics:\n");
+    
+    if (@device_activity) {
+        printf("Total activity by device:\n");
+        print(@device_activity);
+    }
+}

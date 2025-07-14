@@ -1,0 +1,200 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * vhost-ptr-ring-debug.bt - Quick diagnostic tool for vhost-net queue issues
+ *
+ * This script monitors TUN/vhost-net activity using only available probe points
+ * to help diagnose queue 0 issues and activity patterns.
+ *
+ * Usage: sudo bpftrace vhost-ptr-ring-debug.bt
+ */
+
+BEGIN {
+    printf("🔍 vhost-net Activity Monitor (Compatible Version)\n");
+    printf("Monitoring TUN/vhost activity for queue issues...\n");
+    printf("Press Ctrl+C to stop\n\n");
+    printf("%-12s %-8s %-15s %-8s %-12s\n",
+           "TIME", "COMM", "FUNCTION", "QUEUE", "DETAILS");
+}
+
+// Monitor TUN transmit to capture queue context
+kprobe:tun_net_xmit {
+    $skb = (struct sk_buff *)arg0;
+    $dev = (struct net_device *)arg1;
+    $queue_mapping = $skb->queue_mapping;
+    
+    printf("%-12s %-8s %-15s Q%-7d dev=%s\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           "tun_net_xmit",
+           $queue_mapping,
+           str($dev->name));
+           
+    // Track per-queue activity
+    @queue_tx_count[$queue_mapping] = count();
+    @device_activity[str($dev->name)] = count();
+}
+
+// Monitor TUN receive to detect vhost consumption
+kprobe:tun_recvmsg {
+    if (comm =~ "vhost") {
+        printf("%-12s %-8s %-15s %-8s vhost_consume\n",
+               strftime("%H:%M:%S", nsecs),
+               comm,
+               "tun_recvmsg",
+               "");
+    } else {
+        printf("%-12s %-8s %-15s %-8s other_read\n",
+               strftime("%H:%M:%S", nsecs),
+               comm,
+               "tun_recvmsg",
+               "");
+    }
+           
+    @recvmsg_calls = count();
+    @consumer_activity[comm] = count();
+}
+
+// Monitor the only available ptr_ring function
+kprobe:tap_get_ptr_ring {
+    printf("%-12s %-8s %-15s %-8s ptr_ring_access\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           "tap_get_ptr_ring",
+           "");
+           
+    @ptr_ring_access = count();
+}
+
+// Monitor specific vhost handle_tx variants that exist
+kprobe:handle_tx_net,
+kprobe:handle_tx_copy,
+kprobe:handle_tx_kick {
+    printf("%-12s %-8s %-15s %-8s worker_active\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           func,
+           "");
+           
+    @vhost_worker_activity[func] = count();
+}
+
+// Monitor TCP packet processing (relevant for connection tracking issues)
+kprobe:tcp_packet {
+    if (comm =~ "vhost") {
+        printf("%-12s %-8s %-15s %-8s ct_processing\n",
+               strftime("%H:%M:%S", nsecs),
+               comm,
+               "tcp_packet",
+               "");
+               
+        @ct_activity = count();
+    }
+}
+
+// Track memory and I/O issues
+kprobe:kfree_skb {
+    $skb = (struct sk_buff *)arg0;
+    printf("%-12s %-8s %-15s Q%-7d skb_drop\n",
+           strftime("%H:%M:%S", nsecs),
+           comm,
+           "kfree_skb",
+           $skb->queue_mapping);
+           
+    @drops_by_queue[$skb->queue_mapping] = count();
+    @total_drops = count();
+}
+
+// Monitor finish_task_switch for scheduler analysis
+kprobe:finish_task_switch {
+    if (comm =~ "vhost") {
+        @vhost_schedules = count();
+        @last_vhost_schedule = nsecs;
+    }
+}
+
+// Periodic summary every 10 seconds
+interval:s:10 {
+    time();
+    printf("\n📊 Activity Summary (last 10s):\n");
+    
+    if (@queue_tx_count) {
+        printf("TX Activity by Queue:\n");
+        print(@queue_tx_count);
+        clear(@queue_tx_count);
+    }
+    
+    if (@drops_by_queue) {
+        printf("Drops by Queue:\n");
+        print(@drops_by_queue);
+        clear(@drops_by_queue);
+    }
+    
+    if (@vhost_worker_activity) {
+        printf("vhost Worker Activity:\n");
+        print(@vhost_worker_activity);
+        clear(@vhost_worker_activity);
+    }
+    
+    if (@consumer_activity) {
+        printf("Consumer Activity by Process:\n");
+        print(@consumer_activity);
+        clear(@consumer_activity);
+    }
+    
+    printf("Counters: recvmsg=%d ptr_ring_access=%d ct_activity=%d drops=%d vhost_schedules=%d\n",
+           @recvmsg_calls, @ptr_ring_access, @ct_activity, @total_drops, @vhost_schedules);
+    
+    // Check for queue imbalance
+    if (@queue_tx_count[0] == 0 && (@queue_tx_count[1] > 0 || @queue_tx_count[2] > 0)) {
+        printf("🚨 WARNING: Queue 0 inactive while other queues active!\n");
+    }
+    
+    // Check for missing consumer activity
+    if (@recvmsg_calls == 0 && @total_drops > 0) {
+        printf("🚨 WARNING: Drops detected but no consumer activity!\n");
+    }
+    
+    clear(@recvmsg_calls);
+    clear(@ptr_ring_access);
+    clear(@ct_activity);
+    clear(@total_drops);
+    clear(@vhost_schedules);
+    clear(@consumer_activity);
+    
+    printf("\n");
+}
+
+// Look for scheduling issues
+interval:s:5 {
+    $now = nsecs;
+    if (@last_vhost_schedule > 0 && ($now - @last_vhost_schedule) > 5000000000) {
+        printf("⚠️  vhost worker hasn't been scheduled for >5s\n");
+    }
+}
+
+END {
+    printf("\n🏁 Monitoring stopped.\n");
+    printf("Final Statistics:\n");
+    
+    if (@device_activity) {
+        printf("Total activity by device:\n");
+        print(@device_activity);
+    }
+    
+    if (@queue_tx_count) {
+        printf("Final TX activity by queue:\n");  
+        print(@queue_tx_count);
+    }
+    
+    if (@drops_by_queue) {
+        printf("Total drops by queue:\n");
+        print(@drops_by_queue);
+    }
+    
+    printf("Analysis Tips:\n");
+    printf("- Check if queue 0 shows zero or very low activity\n");
+    printf("- Look for vhost worker scheduling gaps\n");
+    printf("- Compare TX activity vs consumer (recvmsg) activity\n");
+    printf("- Monitor for drops concentrated in specific queues\n");
+}
