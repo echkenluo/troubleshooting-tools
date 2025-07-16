@@ -1,0 +1,73 @@
+#!/usr/bin/env bpftrace
+
+BEGIN
+{
+    printf("Guest virtio-net RX Monitor\n");
+    printf("TIME        EVENT           CPU Q    COMM           INFO\n");
+    printf("==================================================\n");
+}
+
+kprobe:skb_recv_done
+{
+    $rvq = arg0;
+    $idx16 = *(uint32*)($rvq + 16);
+    $idx24 = *(uint32*)($rvq + 24);
+    $idx32 = *(uint32*)($rvq + 32);
+    
+    $vq_index = 0;
+    if ($idx16 < 256) {
+        $vq_index = $idx16;
+    } else if ($idx24 < 256) {
+        $vq_index = $idx24;
+    } else if ($idx32 < 256) {
+        $vq_index = $idx32;
+    }
+    
+    $queue_index = $vq_index / 2;
+    $num_free = *(uint32*)($rvq + 20);
+    
+    printf("%-12llu %-15s %-3d %-4d %-14s vq=0x%llx idx=%d free=%d\n",
+           elapsed / 1000000,
+           "skb_recv_done",
+           cpu,
+           $queue_index,
+           comm,
+           $rvq,
+           $vq_index,
+           $num_free);
+}
+
+kprobe:virtnet_poll
+{
+    $napi = arg0;
+    $budget = arg1;
+    
+    printf("%-12llu %-15s %-3d %-4s %-14s napi=0x%llx budget=%d\n",
+           elapsed / 1000000,
+           "virtnet_poll",
+           cpu,
+           "?",
+           comm,
+           $napi,
+           $budget);
+}
+
+kretprobe:virtnet_poll
+{
+    $received = retval;
+    
+    if ($received > 0) {
+        printf("%-12llu %-15s %-3d %-4s %-14s received=%d\n",
+               elapsed / 1000000,
+               "poll_return",
+               cpu,
+               "?",
+               comm,
+               $received);
+    }
+}
+
+END
+{
+    printf("\nStopped.\n");
+}

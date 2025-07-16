@@ -1,0 +1,152 @@
+#!/usr/bin/env bpftrace
+/*
+ * guest-virtio-rx-trace.bt - Monitor Guest virtio-net RX interrupts and polling
+ *
+ * This traces:
+ * - skb_recv_done: virtio-net RX interrupt handler
+ * - virtnet_poll: NAPI poll handler for packet processing
+ *
+ * Usage:
+ *   bpftrace guest-virtio-rx-trace.bt
+ *   bpftrace -e '#define FILTER_QUEUE 0' guest-virtio-rx-trace.bt  # Filter queue 0
+ *   bpftrace -e '#define FILTER_QUEUE 1' guest-virtio-rx-trace.bt  # Filter queue 1
+ */
+
+#include <linux/skbuff.h>
+#include <linux/netdevice.h>
+#include <linux/virtio.h>
+#include <linux/virtio_config.h>
+#include <net/sock.h>
+
+// Simplified virtqueue structure based on kernel headers
+struct virtqueue {
+    struct list_head list;
+    void (*callback)(struct virtqueue *vq);
+    const char *name;
+    struct virtio_device *vdev;
+    unsigned int index;
+    unsigned int num_free;
+    void *priv;
+    // Additional fields exist but not needed
+};
+
+// Simplified virtio_device structure
+struct virtio_device {
+    int index;
+    bool failed;
+    bool config_enabled;
+    bool config_change_pending;
+    spinlock_t config_lock;
+    struct device dev;
+    struct virtio_device_id id;
+    const struct virtio_config_ops *config;
+    const struct vringh_config_ops *vringh_config;
+    struct list_head vqs;
+    u64 features;
+    void *priv;  // This points to virtnet_info in virtio-net
+};
+
+// Simplified napi_struct for virtnet_poll
+struct napi_struct {
+    struct list_head poll_list;
+    unsigned long state;
+    int weight;
+    unsigned long gro_bitmask;
+    int (*poll)(struct napi_struct *, int);
+    struct net_device *dev;
+    // Additional fields exist
+};
+
+#ifndef FILTER_QUEUE
+#define FILTER_QUEUE 999999  // No filter by default
+#endif
+
+BEGIN
+{
+    printf("Guest virtio-net RX Trace Started\n");
+    printf("Monitoring skb_recv_done and virtnet_poll events\n");
+    if ($FILTER_QUEUE != 999999) {
+        printf("Filtering for queue: %d\n", $FILTER_QUEUE);
+    } else {
+        printf("Monitoring all queues\n");
+    }
+    printf("%-12s %-16s %-6s %-10s %-16s %s\n", 
+           "TIME(ms)", "EVENT", "CPU", "QUEUE", "COMM", "INFO");
+    printf("=============================================================================\n");
+}
+
+kprobe:skb_recv_done
+{
+    $rvq = (struct virtqueue *)arg0;
+    
+    // Get queue index: RX queues are even numbered (0, 2, 4...)
+    $vq_index = $rvq->index;
+    $queue_index = $vq_index / 2;
+    
+    // Apply queue filter if specified
+    if ($FILTER_QUEUE != 999999 && $queue_index != $FILTER_QUEUE) {
+        return;
+    }
+    
+    // Get virtio_device from virtqueue
+    $vdev = $rvq->vdev;
+    
+    // Get virtnet_info (private data)
+    $virtnet_info = $vdev->priv;
+    
+    // Get net_device pointer (first field in virtnet_info)
+    // Since we can't directly dereference complex types, use offset
+    $netdev_ptr = *(uint64 *)$virtnet_info;
+    $netdev = (struct net_device *)$netdev_ptr;
+    
+    printf("%-12llu %-16s %-6d %-10d %-16s vq=0x%llx idx=%d free=%d dev=%s\n",
+           elapsed / 1000000,
+           "skb_recv_done",
+           cpu,
+           $queue_index,
+           comm,
+           $rvq,
+           $vq_index,
+           $rvq->num_free,
+           $netdev->name);
+}
+
+kprobe:virtnet_poll
+{
+    $napi = (struct napi_struct *)arg0;
+    $budget = arg1;
+    
+    // For virtnet_poll, getting the queue is more complex
+    // The receive_queue structure contains napi as a member
+    // We'll use a simplified approach here
+    
+    printf("%-12llu %-16s %-6d %-10s %-16s budget=%d napi=0x%llx dev=%s\n",
+           elapsed / 1000000,
+           "virtnet_poll",
+           cpu,
+           "?",  // Queue determination is complex, leaving as unknown
+           comm,
+           $budget,
+           $napi,
+           $napi->dev ? $napi->dev->name : "unknown");
+}
+
+kretprobe:virtnet_poll
+{
+    $received = retval;
+    
+    if ($received > 0) {
+        printf("%-12llu %-16s %-6d %-10s %-16s received=%d packets\n",
+               elapsed / 1000000,
+               "virtnet_poll_ret",
+               cpu,
+               "?",
+               comm,
+               $received);
+    }
+}
+
+END
+{
+    printf("\nMonitoring stopped.\n");
+}

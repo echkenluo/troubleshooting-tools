@@ -1,0 +1,130 @@
+#!/usr/bin/env bpftrace
+/*
+ * guest-virtio-rx-monitor.bt - Monitor Guest virtio-net RX interrupts and polling
+ *
+ * This traces:
+ * - skb_recv_done: virtio-net RX interrupt handler
+ * - virtnet_poll: NAPI poll handler for packet processing
+ *
+ * Usage:
+ *   bpftrace guest-virtio-rx-monitor.bt
+ *   bpftrace -e 'inline uint32 FILTER_QUEUE = 0;' guest-virtio-rx-monitor.bt  # Filter queue 0
+ *   bpftrace -e 'inline uint32 FILTER_QUEUE = 1;' guest-virtio-rx-monitor.bt  # Filter queue 1
+ */
+
+#ifndef FILTER_QUEUE
+#define FILTER_QUEUE 999999  // No filter by default
+#endif
+
+BEGIN
+{
+    printf("Guest virtio-net RX Monitor Started\n");
+    printf("Monitoring skb_recv_done and virtnet_poll events\n");
+    if ($FILTER_QUEUE != 999999) {
+        printf("Filtering for queue: %d\n", $FILTER_QUEUE);
+    } else {
+        printf("Monitoring all queues\n");
+    }
+    printf("%-12s %-16s %-6s %-10s %-16s %s\n", 
+           "TIME", "EVENT", "CPU", "QUEUE", "COMM", "INFO");
+    printf("=============================================================================\n");
+}
+
+kprobe:skb_recv_done
+{
+    $rvq = (struct virtqueue *)arg0;
+    
+    // Get queue index: vq->index / 2 (RX queues are even numbered)
+    $vq_index = $rvq->index;
+    $queue_index = $vq_index / 2;
+    
+    // Apply queue filter if specified
+    if ($FILTER_QUEUE != 999999 && $queue_index != $FILTER_QUEUE) {
+        return;
+    }
+    
+    // Get virtio_device from virtqueue
+    $vdev = $rvq->vdev;
+    
+    // Get net_device name (through virtnet_info)
+    // Note: This assumes net_device is the first field in virtnet_info
+    $virtnet_info = $vdev->priv;
+    $netdev_ptr = (uint64)$virtnet_info;
+    $netdev = *(struct net_device **)$netdev_ptr;
+    
+    printf("%-12llu %-16s %-6d %-10d %-16s vq=0x%llx num=%d free=%d dev=%s\n",
+           elapsed / 1000000,
+           "skb_recv_done",
+           cpu,
+           $queue_index,
+           comm,
+           $rvq,
+           $rvq->num,
+           $rvq->num_free,
+           $netdev->name);
+}
+
+kprobe:virtnet_poll
+{
+    $napi = (struct napi_struct *)arg0;
+    $budget = arg1;
+    
+    // Get receive_queue from napi using container_of
+    // This is tricky - we need to know the offset of napi in receive_queue
+    // For now, we'll try to get virtqueue from a reasonable offset
+    // The exact offset may vary by kernel version
+    
+    // Attempt to read virtqueue pointer from receive_queue
+    // Assuming vq is the first field in receive_queue
+    $rq_base = (uint64)$napi - 64;  // Approximate offset, may need adjustment
+    $vq_ptr = *(uint64 *)$rq_base;
+    
+    if ($vq_ptr == 0) {
+        // Try alternative offset
+        $rq_base = (uint64)$napi - 128;
+        $vq_ptr = *(uint64 *)$rq_base;
+    }
+    
+    if ($vq_ptr != 0) {
+        $vq = (struct virtqueue *)$vq_ptr;
+        $queue_index = $vq->index / 2;
+        
+        // Apply queue filter if specified
+        if ($FILTER_QUEUE != 999999 && $queue_index != $FILTER_QUEUE) {
+            return;
+        }
+        
+        // Get device info
+        $vdev = $vq->vdev;
+        $virtnet_info = $vdev->priv;
+        $netdev_ptr2 = (uint64)$virtnet_info;
+        $netdev = *(struct net_device **)$netdev_ptr2;
+        
+        printf("%-12llu %-16s %-6d %-10d %-16s budget=%d vq=0x%llx dev=%s\n",
+               elapsed / 1000000,
+               "virtnet_poll",
+               cpu,
+               $queue_index,
+               comm,
+               $budget,
+               $vq,
+               $netdev->name);
+    } else {
+        // Couldn't determine queue, print without filtering
+        if ($FILTER_QUEUE == 999999) {
+            printf("%-12llu %-16s %-6d %-10s %-16s budget=%d napi=0x%llx\n",
+                   elapsed / 1000000,
+                   "virtnet_poll",
+                   cpu,
+                   "?",
+                   comm,
+                   $budget,
+                   $napi);
+        }
+    }
+}
+
+END
+{
+    printf("\nMonitoring stopped.\n");
+}

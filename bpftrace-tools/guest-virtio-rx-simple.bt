@@ -1,0 +1,53 @@
+#!/usr/bin/env bpftrace
+/*
+ * guest-virtio-rx-simple.bt - Simple monitor for Guest virtio-net RX
+ *
+ * Usage:
+ *   bpftrace guest-virtio-rx-simple.bt
+ */
+
+BEGIN
+{
+    printf("Guest virtio-net RX Monitor (Simple Version)\n");
+    printf("%-12s %-16s %-6s %-10s %-16s %s\n", 
+           "TIME(ms)", "EVENT", "CPU", "QUEUE", "COMM", "INFO");
+    printf("================================================================\n");
+}
+
+kprobe:skb_recv_done
+{
+    $rvq = arg0;
+    
+    // Get queue index from virtqueue structure
+    // Assuming virtqueue has index field at offset 16 (may vary by kernel)
+    $vq_index = *(uint32*)($rvq + 16);
+    $queue_index = $vq_index / 2;
+    
+    printf("%-12llu %-16s %-6d %-10d %-16s vq=0x%llx\n",
+           elapsed / 1000000,
+           "skb_recv_done",
+           cpu,
+           $queue_index,
+           comm,
+           $rvq);
+}
+
+kprobe:virtnet_poll
+{
+    $napi = arg0;
+    $budget = arg1;
+    
+    printf("%-12llu %-16s %-6d %-10s %-16s budget=%d napi=0x%llx\n",
+           elapsed / 1000000,
+           "virtnet_poll",
+           cpu,
+           "?",
+           comm,
+           $budget,
+           $napi);
+}
+
+END
+{
+    printf("\nMonitoring stopped.\n");
+}

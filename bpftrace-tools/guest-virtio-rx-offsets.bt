@@ -1,0 +1,93 @@
+#!/usr/bin/env bpftrace
+/*
+ * guest-virtio-rx-offsets.bt - Monitor Guest virtio-net RX (using offsets)
+ *
+ * This version uses hardcoded offsets instead of headers
+ * Offsets may need adjustment based on kernel version
+ *
+ * Usage:
+ *   bpftrace guest-virtio-rx-offsets.bt
+ */
+
+BEGIN
+{
+    printf("Guest virtio-net RX Monitor (Offset-based)\n");
+    printf("Note: This uses hardcoded offsets that may vary by kernel version\n");
+    printf("%-12s %-16s %-6s %-10s %-16s %s\n", 
+           "TIME(ms)", "EVENT", "CPU", "QUEUE", "COMM", "INFO");
+    printf("================================================================\n");
+}
+
+kprobe:skb_recv_done
+{
+    $rvq = arg0;
+    
+    // virtqueue->index is typically at offset 16 or 24
+    // Try common offsets
+    $vq_index_offset16 = *(uint32*)($rvq + 16);
+    $vq_index_offset24 = *(uint32*)($rvq + 24);
+    $vq_index_offset32 = *(uint32*)($rvq + 32);
+    
+    // Use the value that seems reasonable (< 256)
+    $vq_index = 0;
+    if ($vq_index_offset16 < 256) {
+        $vq_index = $vq_index_offset16;
+    } else if ($vq_index_offset24 < 256) {
+        $vq_index = $vq_index_offset24;
+    } else if ($vq_index_offset32 < 256) {
+        $vq_index = $vq_index_offset32;
+    }
+    
+    $queue_index = $vq_index / 2;
+    
+    // virtqueue->num_free is typically near index
+    $num_free = *(uint32*)($rvq + 20);  // Adjust offset as needed
+    
+    printf("%-12llu %-16s %-6d %-10d %-16s vq=0x%llx idx=%d(off16=%d,24=%d,32=%d) free=%d\n",
+           elapsed / 1000000,
+           "skb_recv_done",
+           cpu,
+           $queue_index,
+           comm,
+           $rvq,
+           $vq_index,
+           $vq_index_offset16,
+           $vq_index_offset24,
+           $vq_index_offset32,
+           $num_free);
+}
+
+kprobe:virtnet_poll
+{
+    $napi = arg0;
+    $budget = arg1;
+    
+    printf("%-12llu %-16s %-6d %-10s %-16s budget=%d napi=0x%llx\n",
+           elapsed / 1000000,
+           "virtnet_poll",
+           cpu,
+           "?",
+           comm,
+           $budget,
+           $napi);
+}
+
+kretprobe:virtnet_poll
+{
+    $received = retval;
+    
+    if ($received > 0) {
+        printf("%-12llu %-16s %-6d %-10s %-16s received=%d packets\n",
+               elapsed / 1000000,
+               "virtnet_poll_ret",
+               cpu,
+               "?",
+               comm,
+               $received);
+    }
+}
+
+END
+{
+    printf("\nMonitoring stopped.\n");
+}
