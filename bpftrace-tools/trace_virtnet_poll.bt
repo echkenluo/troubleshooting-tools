@@ -1,0 +1,62 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * trace_virtnet_poll.bt - Trace virtnet_poll function with filtering
+ * 
+ * This script traces the virtnet_poll function with queue filtering
+ * Hardcoded filters: queue 0
+ * 
+ * Usage: sudo bpftrace trace_virtnet_poll.bt
+ */
+
+BEGIN {
+    printf("Tracing virtnet_poll...\n");
+    printf("Filter: queue 0\n\n");
+    
+    @target_rx_queue = 0;
+}
+
+kprobe:virtnet_poll {
+    $napi_ptr = arg0;
+    $budget = arg1;
+    
+    // Get receive_queue pointer using container_of
+    $rq_ptr = $napi_ptr - 8;
+    
+    // Get virtqueue pointer from rq->vq
+    $vq_ptr = *(uint64*)$rq_ptr;
+    
+    // Validate pointer
+    if ($vq_ptr > 0xffff000000000000) {
+        // Get queue index and calculate RX queue
+        $vq_index = *(uint32*)($vq_ptr + 40);
+        $rx_queue = $vq_index / 2;
+        
+        // Apply filter
+        if ($rx_queue == 0) {
+            printf("%llu: ENTRY q%d budget=%d vq_idx=%d\n",
+                   nsecs, $rx_queue, $budget, $vq_index);
+            @entries++;
+            @last_budget = $budget;
+        }
+    }
+}
+
+kretprobe:virtnet_poll {
+    $processed = retval;
+    
+    if (@last_budget > 0) {
+        printf("%llu: EXIT processed=%d\n", nsecs, $processed);
+        @last_budget = 0;
+        @exits++;
+    }
+}
+
+END {
+    printf("\nEntries: %d, Exits: %d\n", @entries, @exits);
+    
+    clear(@target_rx_queue);
+    clear(@entries);
+    clear(@exits);
+    clear(@last_budget);
+}

@@ -179,3 +179,7 @@ BCC tools requiring testing should be deployed to: `smartx@192.168.70.33:/home/s
 - Create test subdirectories named after the tool's purpose for each testing session
 - Use `ssh mcpserver` or direct `scp` for deployment
 - Execute tests using `ssh mcpserver` or direct `ssh` connections
+
+## Test 
+- 测试环境如果是 python3-bcc 包，测试前修改使用的 python版本为 python3。
+- 测试环境操作系统（uname -a) 如果是 oe ，则 import bcc 需要改为 import bpfcc
