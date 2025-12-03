@@ -98,7 +98,7 @@ measurement-tools/
 - `vm_network_latency_details.py` - VM 网络延迟详细分析
 - `vhost_queue_correlation_details.py` - vhost 队列关联详细统计
 - `tun_to_vhost_queue_stats_details.py` - TUN 到 vhost 队列详细统计
-- `qdisc_lateny_details.py` - Qdisc 数据包排序详细跟踪
+- `qdisc_latency_details.py` - Qdisc 数据包排序详细跟踪
 
 ### 2.2 Summary 版本 - 汇总统计测量工具
 
@@ -383,7 +383,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary
 
 #### 系统网络性能 (`system-network/`)
 
-- **system_network_latency_summary.py** [Summary 版本] 新增
+- **system_network_latency_summary.py** [Summary 版本]
 
   - **使用场景**：长时间系统网络延迟监控,建立性能基线
   - **测量方式**：基于 BPF_HISTOGRAM 的相邻阶段延迟统计
@@ -402,7 +402,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary
   - **使用场景**：ICMP 网络延迟基准测试
   - **收集数据**：ICMP 往返时间统计、丢包率
   - **特殊参数**：支持 `--direction` (tx/rx) 指定跟踪方向
-- **system_network_perfomance_metrics.py** [Standalone 工具]
+- **system_network_performance_metrics.py** [Standalone 工具]
 
   - **使用场景**：整体系统网络性能评估
   - **收集数据**：完整数据流跟踪、吞吐量、延迟、CPU 使用率
@@ -435,12 +435,12 @@ sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary
   - **使用场景**：同节点虚拟机间通信延迟测量
   - **收集数据**：点对点延迟、基本统计
   - **参数**：`--send-dev`, `--recv-dev`
-- **multi_vm_pair_latency.py** [Standalone 工具]  新增
+- **multi_vm_pair_latency.py** [Standalone 工具]
 
   - **使用场景**：多虚拟机对延迟监控
   - **收集数据**：多个 VM 对的延迟统计
   - **参数**：`--send-dev`, `--recv-dev`, `--ports`
-- **multi_vm_pair_latency_pairid.py** [Standalone 工具]  新增
+- **multi_vm_pair_latency_pairid.py** [Standalone 工具]
 
   - **使用场景**：带 Pair ID 标识的多 VM 对延迟监控
   - **收集数据**：多个 VM 对的延迟,带 pair 标识符
@@ -448,17 +448,17 @@ sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary
 
 ##### 虚拟机对延迟间隙分析 (`vm_pair_latency/vm_pair_latency_gap/`)
 
-- **vm_pair_gap.py** [Standalone 工具] 新增
+- **vm_pair_gap.py** [Standalone 工具]
 
   - **使用场景**：检测超过阈值的延迟间隙
   - **收集数据**：延迟异常事件、间隙统计
   - **参数**：`--threshold` (延迟阈值,微秒), `--ports`
-- **multi_port_gap.py** [Standalone 工具] 新增
+- **multi_port_gap.py** [Standalone 工具]
 
   - **使用场景**：多端口延迟间隙分析
   - **收集数据**：多个端口的延迟异常统计
   - **参数**：`--threshold`, `--ports` (多个端口列表)
-- **multi_vm_pair_multi_port_gap.py** [Standalone 工具]  新增
+- **multi_vm_pair_multi_port_gap.py** [Standalone 工具]
 
   - **使用场景**：多 VM 对、多端口延迟间隙综合分析
   - **收集数据**：复杂场景下的延迟异常检测
@@ -466,7 +466,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary
 
 #### 通用性能工具
 
-- **qdisc_lateny_details.py** [Details 版本]
+- **qdisc_latency_details.py** [Details 版本]
 
   - **使用场景**：Qdisc 数据包排序详细跟踪
   - **收集数据**：队列规则处理时间、数据包排序信息
@@ -560,7 +560,7 @@ sudo bpftrace <脚本路径> [参数]
 
 #### 4.2.2 系统网络性能工具
 
-**system_network_latency_summary.py** - 系统网络延迟直方图 [Summary 版本] 新增
+**system_network_latency_summary.py** - 系统网络延迟直方图 [Summary 版本]
 
 ```bash
 # 系统网络相邻阶段延迟直方图统计
@@ -587,17 +587,17 @@ sudo python3 measurement-tools/performance/system-network/system_network_latency
   --direction both --protocol udp
 ```
 
-**system_network_perfomance_metrics.py** - 系统网络性能指标
+**system_network_performance_metrics.py** - 系统网络性能指标
 
 ```bash
 # 监控系统网络性能指标
-sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py \
+sudo python3 measurement-tools/performance/system-network/system_network_performance_metrics.py \
   --internal-interface port-storage --phy-interface ens11 \
   --src-ip 10.132.114.11 --dst-ip 10.132.114.12 \
   --direction rx --protocol tcp
 
 # 启用连接跟踪的性能监控
-sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py \
+sudo python3 measurement-tools/performance/system-network/system_network_performance_metrics.py \
   --internal-interface br0 --phy-interface eth0 \
   --enable-ct --verbose
 ```
@@ -613,7 +613,7 @@ sudo python3 measurement-tools/performance/system-network/system_network_icmp_rt
 
 #### 4.2.3 虚拟机网络性能工具
 
-**vm_network_latency_summary.py** - VM 网络延迟直方图 [Summary 版本] ⭐ 新增
+**vm_network_latency_summary.py** - VM 网络延迟直方图 [Summary 版本]
 
 ```bash
 # VM 网络相邻阶段延迟直方图统计
@@ -658,7 +658,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_pair_latency/vm_pair_la
   --send-dev tap0 --recv-dev tap1
 ```
 
-**multi_vm_pair_latency.py** - 多虚拟机对延迟监控  新增
+**multi_vm_pair_latency.py** - 多虚拟机对延迟监控
 
 ```bash
 # 多虚拟机对、多端口延迟监控
@@ -666,7 +666,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_pair_latency/multi_vm_p
   --send-dev tap0 --recv-dev tap1 --ports 22 80 443
 ```
 
-**multi_vm_pair_latency_pairid.py** - 带 Pair ID 的多 VM 对延迟 新增
+**multi_vm_pair_latency_pairid.py** - 带 Pair ID 的多 VM 对延迟
 
 ```bash
 # 使用 Pair ID 标识的多 VM 对延迟监控
@@ -674,7 +674,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_pair_latency/multi_vm_p
   --config vm_pairs.txt
 ```
 
-**vm_pair_gap.py** - 延迟间隙分析  新增
+**vm_pair_gap.py** - 延迟间隙分析
 
 ```bash
 # 延迟间隙分析（设定阈值,微秒）
@@ -682,7 +682,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_pair_latency/vm_pair_la
   --threshold 100 --ports 22 80
 ```
 
-**multi_port_gap.py** - 多端口延迟间隙分析  新增
+**multi_port_gap.py** - 多端口延迟间隙分析
 
 ```bash
 # 多端口延迟间隙分析
@@ -690,7 +690,7 @@ sudo python3 measurement-tools/performance/vm-network/vm_pair_latency/vm_pair_la
   --threshold 50 --ports 22 80 443 8080
 ```
 
-**multi_vm_pair_multi_port_gap.py** - 多 VM 对多端口延迟间隙 新增
+**multi_vm_pair_multi_port_gap.py** - 多 VM 对多端口延迟间隙
 
 ```bash
 # 复杂场景：多 VM 对、多端口延迟间隙综合分析
@@ -1065,7 +1065,7 @@ sudo python3 measurement-tools/cpu/offcputime-ts.py
 
 ### 5.1 性能监控工具输出格式
 
-#### 5.1.1 Summary 工具输出格式 (直方图统计)  新增
+#### 5.1.1 Summary 工具输出格式 (直方图统计)
 
 Summary 版本工具使用 BPF_HISTOGRAM 进行内核态聚合统计,输出延迟分布直方图。
 
@@ -1208,7 +1208,7 @@ P99 latency: 234 us
 
 #### 5.1.2 系统网络性能指标输出 (Details 工具)
 
-**system_network_perfomance_metrics.py 输出格式：**
+**system_network_performance_metrics.py 输出格式：**
 
 ```
 === System Network Performance Tracer ===
@@ -1832,7 +1832,7 @@ sudo apt install -y bcc-tools python3-bcc
 sudo apt install -y bpftrace
 
 # 安装其他依赖
-sudo apt install -y kernel-devel-$(uname -r) kernel-header-$(uname -r) 
+sudo apt install -y linux-headers-$(uname -r) 
 
 # 克隆项目
 git clone https://github.com/echkenluo/troubleshooting-tools.git
@@ -1893,8 +1893,8 @@ sudo python3 -c "import sys; print(sys.path)"
 sudo find /usr -name "*bcc*" -type d
 
 # 重新安装 BCC
-sudo yum reinstall python3-bcc bcc-tools  # CentOS
-sudo apt reinstall python3-bpfcc bpfcc-tools  # openEuler 
+sudo yum reinstall python3-bcc bcc-tools  # CentOS/RHEL
+sudo apt reinstall python3-bpfcc bpfcc-tools  # Ubuntu/Debian 
 ```
 
 **内核符号问题**:
