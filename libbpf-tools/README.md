@@ -24,7 +24,12 @@ libbpf-tools/
 │   ├── eth_drop/
 │   ├── system_network_latency_summary/
 │   ├── vm_network_latency_summary/
-│   └── kernel_icmp_rtt/
+│   ├── kernel_icmp_rtt/
+│   ├── ovs_upcall_latency_summary/
+│   ├── kvm_irqfd_stats_summary/
+│   ├── vhost_queue_correlation/
+│   ├── virtnet_poll_monitor/
+│   └── vhost_buf_peek_stats/
 └── output/             # Build output directory
 ```
 
@@ -89,6 +94,52 @@ ICMP RTT tracer for kernel network stack (no OVS dependency).
 ```bash
 ./output/kernel_icmp_rtt --src-ip 192.168.1.10 --dst-ip 192.168.1.20 --direction tx
 ./output/kernel_icmp_rtt --src-ip 192.168.1.10 --dst-ip 192.168.1.20 --interface eth0 --latency-ms 10
+```
+
+### ovs_upcall_latency_summary
+OVS upcall latency histogram tool for measuring delay between upcall and userspace processing.
+
+```bash
+./output/ovs_upcall_latency_summary --interval 5
+./output/ovs_upcall_latency_summary --src-ip 192.168.1.10 --protocol tcp
+./output/ovs_upcall_latency_summary --protocol tcp --dst-port 22 --interval 10
+```
+
+### kvm_irqfd_stats_summary
+VM interrupt statistics tool with histogram aggregation for tracking QEMU/KVM interrupts.
+
+```bash
+./output/kvm_irqfd_stats_summary 12345                           # Monitor VM with QEMU PID 12345
+./output/kvm_irqfd_stats_summary 12345 --category data           # Only vhost threads
+./output/kvm_irqfd_stats_summary 12345 --category data --vhost-pid 12350
+./output/kvm_irqfd_stats_summary 12345 --interval 10
+```
+
+### vhost_queue_correlation
+Simple VHOST queue monitor for vhost_signal and vhost_notify events.
+
+```bash
+./output/vhost_queue_correlation
+./output/vhost_queue_correlation --device vnet33 --queue 0
+./output/vhost_queue_correlation --device vnet33 --verbose
+```
+
+### virtnet_poll_monitor
+Virtio-net RX function monitor (virtnet_poll and skb_recv_done).
+
+```bash
+./output/virtnet_poll_monitor
+./output/virtnet_poll_monitor --device eth0
+./output/virtnet_poll_monitor --device eth0 --queue 0
+```
+
+### vhost_buf_peek_stats
+Track vhost_net_buf_peek return values by nvq pointer.
+
+```bash
+./output/vhost_buf_peek_stats
+./output/vhost_buf_peek_stats -i 5
+./output/vhost_buf_peek_stats -i 1 -c
 ```
 
 ## Architecture
