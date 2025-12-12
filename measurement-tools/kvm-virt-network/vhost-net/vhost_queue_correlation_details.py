@@ -7,6 +7,8 @@ import socket
 import struct
 import sys
 import datetime
+import re
+
 # BCC module import with fallback
 try:
     from bcc import BPF
@@ -26,6 +28,72 @@ import ctypes as ct
 # Devname structure for device filtering
 class Devname(ct.Structure):
     _fields_=[("name", ct.c_char*16)]
+
+def find_kernel_function(base_name, verbose=False):
+    """
+    Find actual kernel function name, handling GCC clone suffixes.
+    GCC may generate optimized clones with suffixes like:
+      .isra.N     - Inter-procedural Scalar Replacement of Aggregates
+      .constprop.N - Constant Propagation
+      .part.N     - Partial inlining
+      .cold/.hot  - Code path optimization
+    Returns the actual symbol name or None if not found.
+    """
+    # Pattern handles both vmlinux and module symbols:
+    #   vmlinux: "ffffffff81234567 t func_name"
+    #   module:  "ffffffffc1234567 t func_name\t[module_name]"
+    pattern = re.compile(
+        r'^[0-9a-f]+\s+[tT]\s+(' + re.escape(base_name) +
+        r'(?:\.(?:isra|constprop|part|cold|hot)\.\d+)*)(?:\s+\[\w+\])?$'
+    )
+
+    candidates = []
+    try:
+        with open('/proc/kallsyms', 'r') as f:
+            for line in f:
+                match = pattern.match(line.strip())
+                if match:
+                    candidates.append(match.group(1))
+    except Exception as e:
+        if verbose:
+            print("Warning: Failed to read /proc/kallsyms: {}".format(e))
+        return None
+
+    if not candidates:
+        if verbose:
+            print("Warning: No symbol matching '{}' found in kallsyms".format(base_name))
+        return None
+
+    # Prefer exact match, then shortest suffix
+    if base_name in candidates:
+        return base_name
+
+    result = min(candidates, key=len)
+    if verbose:
+        print("Found '{}' as '{}' in kallsyms".format(base_name, result))
+    return result
+
+def get_kernel_version():
+    """
+    Get kernel major.minor version tuple.
+    Returns (major, minor) or (0, 0) on error.
+    """
+    try:
+        import platform
+        version_str = platform.release()
+        # Extract version numbers (e.g., "5.10.0-247.0.0.el7.v72.x86_64" -> (5, 10))
+        parts = version_str.split('-')[0].split('.')
+        return (int(parts[0]), int(parts[1]))
+    except Exception:
+        return (0, 0)
+
+def is_kernel_5x_or_later():
+    """
+    Check if kernel is 5.x or later.
+    vhost_vring_call structure changed in kernel 5.x (call_ctx became a struct).
+    """
+    major, minor = get_kernel_version()
+    return major >= 5
 
 # BPF program for queue correlation using sock pointer
 bpf_text = """
@@ -169,18 +237,59 @@ struct vhost_dev {
     int byte_weight;
 };
 
+// irq_bypass_producer structure (kernel 5.x+)
+// Used in vhost_vring_call for IRQ bypass support
+struct irq_bypass_producer {
+    struct list_head node;          // 16 bytes
+    void *token;                    // 8 bytes
+    int irq;                        // 4 bytes
+    int padding;                    // 4 bytes alignment
+    void *add_consumer;             // 8 bytes (function pointer)
+    void *del_consumer;             // 8 bytes
+    void *stop;                     // 8 bytes
+    void *start;                    // 8 bytes
+};  // Total: 64 bytes
+
+// vhost_vring_call structure (kernel 5.x+)
+// Replaced simple eventfd_ctx* in newer kernels
+struct vhost_vring_call {
+    struct eventfd_ctx *ctx;                // 8 bytes
+    struct irq_bypass_producer producer;    // 64 bytes
+};  // Total: 72 bytes
+
+// KERNEL_VERSION_5X controls which structure layout to use
+// Set via Python based on kernel version detection
+#ifndef KERNEL_VERSION_5X
+#define KERNEL_VERSION_5X 0
+#endif
+
+// VHOST_NOTIFY_CONSTPROP indicates if vhost_notify is a .constprop variant
+// GCC constprop optimization may eliminate the first parameter (vhost_dev*)
+// and only pass vhost_virtqueue* as arg0 instead of arg1
+#ifndef VHOST_NOTIFY_CONSTPROP
+#define VHOST_NOTIFY_CONSTPROP 0
+#endif
+
 struct vhost_virtqueue {
     struct vhost_dev *dev;
-    
+
     // The actual ring of buffers
     struct mutex mutex;
     unsigned int num;
     struct vring_desc *desc;       // __user pointer
-    struct vring_avail *avail;     // __user pointer 
+    struct vring_avail *avail;     // __user pointer
     struct vring_used *used;       // __user pointer
     void *meta_iotlb[3];           // VHOST_NUM_ADDRS = 3
     struct file *kick;
+
+#if KERNEL_VERSION_5X
+    // Kernel 5.x+: call_ctx is a struct containing irq_bypass_producer
+    struct vhost_vring_call call_ctx;
+#else
+    // Kernel 4.x: call_ctx is just a pointer
     struct eventfd_ctx *call_ctx;
+#endif
+
     struct eventfd_ctx *error_ctx;
     struct eventfd_ctx *log_ctx;
     
@@ -705,10 +814,17 @@ int trace_tun_recvmsg_return(struct pt_regs *ctx) {
     return 0;
 }
 
-// Stage 5: vhost_signal - Track using vq -> sock with member_read
-int trace_vhost_signal(struct pt_regs *ctx) {
+// Stage 5: vhost_add_used_and_signal_n - Track using vq -> sock with member_read
+// Note: vhost_signal() is typically inlined, so we probe vhost_add_used_and_signal_n
+// which is the actual function called when packets are added to used ring and signaled
+// Signature: void vhost_add_used_and_signal_n(struct vhost_dev *dev,
+//                                             struct vhost_virtqueue *vq,
+//                                             struct vring_used_elem *heads,
+//                                             unsigned count)
+int trace_vhost_add_used_and_signal_n(struct pt_regs *ctx) {
     void *dev = (void *)PT_REGS_PARM1(ctx);
     struct vhost_virtqueue *vq = (struct vhost_virtqueue *)PT_REGS_PARM2(ctx);
+    // heads = PT_REGS_PARM3, count = PT_REGS_PARM4
     
     if (!vq) return 0;
     
@@ -775,9 +891,16 @@ int trace_vhost_notify_return(struct pt_regs *ctx) {
 BPF_HASH(vhost_notify_params, u64, struct vhost_virtqueue*, 256);
 
 int trace_vhost_notify_entry(struct pt_regs *ctx) {
-    struct vhost_dev *dev = (struct vhost_dev *)PT_REGS_PARM1(ctx);
+    // GCC constprop optimization may change parameter layout:
+    // Original: vhost_notify(struct vhost_dev *dev, struct vhost_virtqueue *vq)
+    // constprop: vhost_notify.constprop.0(struct vhost_virtqueue *vq)
+    //            (dev parameter eliminated, accessed via vq->dev internally)
+#if VHOST_NOTIFY_CONSTPROP
+    struct vhost_virtqueue *vq = (struct vhost_virtqueue *)PT_REGS_PARM1(ctx);
+#else
     struct vhost_virtqueue *vq = (struct vhost_virtqueue *)PT_REGS_PARM2(ctx);
-    
+#endif
+
     if (!vq) return 0;
     
     // Get sock pointer from private_data using READ_FIELD  
@@ -1074,45 +1197,82 @@ Examples:
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     
     args = parser.parse_args()
-    
+
+    # Detect kernel version and set appropriate structure layout
+    kernel_5x = is_kernel_5x_or_later()
+    major, minor = get_kernel_version()
+
+    # Pre-scan for vhost_notify function name to detect constprop variant
+    # This must happen before BPF loading to set the correct compile-time flags
+    vhost_notify_func = find_kernel_function("vhost_notify", verbose=args.verbose)
+    is_constprop = vhost_notify_func and ".constprop" in vhost_notify_func
+
+    # Pre-scan for vhost_add_used_and_signal_n (may be in vhost module)
+    vhost_signal_func = find_kernel_function("vhost_add_used_and_signal_n", verbose=args.verbose)
+
     # Load BPF program
     try:
         if args.verbose:
             print("Loading BPF program...")
-        
-        b = BPF(text=bpf_text)
-        
+            print("Detected kernel version: {}.{}".format(major, minor))
+            print("Using {} vhost_virtqueue layout".format(
+                "kernel 5.x+" if kernel_5x else "kernel 4.x"))
+            if vhost_notify_func:
+                print("vhost_notify function: {} (constprop={})".format(
+                    vhost_notify_func, "YES" if is_constprop else "NO"))
+            if vhost_signal_func:
+                print("vhost_add_used_and_signal_n function: {}".format(vhost_signal_func))
+
+        # Set compile-time macros for correct structure/parameter handling
+        bpf_program = bpf_text
+        defines = []
+        if kernel_5x:
+            defines.append("#define KERNEL_VERSION_5X 1")
+        if is_constprop:
+            defines.append("#define VHOST_NOTIFY_CONSTPROP 1")
+
+        if defines:
+            bpf_program = "\n".join(defines) + "\n" + bpf_program
+
+        b = BPF(text=bpf_program)
+
         # Attach kprobes
         b.attach_kprobe(event="tun_net_xmit", fn_name="trace_tun_net_xmit")
         b.attach_kprobe(event="handle_rx", fn_name="trace_handle_rx")
         b.attach_kprobe(event="tun_recvmsg", fn_name="trace_tun_recvmsg_entry")
         b.attach_kretprobe(event="tun_recvmsg", fn_name="trace_tun_recvmsg_return")
-        b.attach_kprobe(event="vhost_signal", fn_name="trace_vhost_signal")
-        
-        # Try to attach vhost_notify - it might be inlined with .isra suffix
+
+        # Attach vhost_add_used_and_signal_n (vhost_signal is typically inlined)
+        vhost_signal_attached = False
+        if vhost_signal_func:
+            try:
+                b.attach_kprobe(event=vhost_signal_func, fn_name="trace_vhost_add_used_and_signal_n")
+                vhost_signal_attached = True
+                if args.verbose:
+                    print("Attached to {}".format(vhost_signal_func))
+            except Exception as e:
+                if args.verbose:
+                    print("Failed to attach to {}: {}".format(vhost_signal_func, e))
+
+        if not vhost_signal_attached:
+            print("Warning: Could not attach to vhost_add_used_and_signal_n (function not found or attach failed)")
+            print("vhost_signal events will not be captured")
+
+        # Try to attach vhost_notify
         vhost_notify_attached = False
-        try:
-            b.attach_kprobe(event="vhost_notify", fn_name="trace_vhost_notify_entry")
-            b.attach_kretprobe(event="vhost_notify", fn_name="trace_vhost_notify_return2")
-            vhost_notify_attached = True
-            if args.verbose:
-                print("Attached to vhost_notify")
-        except:
-            # Try with .isra suffix (common for inlined functions)
-            for suffix in [".isra.24", ".isra.23", ".isra.25", ".isra.26", ".isra.27", ".isra.28"]:
-                try:
-                    event_name = "vhost_notify" + suffix
-                    b.attach_kprobe(event=event_name, fn_name="trace_vhost_notify_entry")
-                    b.attach_kretprobe(event=event_name, fn_name="trace_vhost_notify_return2")
-                    vhost_notify_attached = True
-                    if args.verbose:
-                        print("Attached to {}".format(event_name))
-                    break
-                except:
-                    continue
-        
+        if vhost_notify_func:
+            try:
+                b.attach_kprobe(event=vhost_notify_func, fn_name="trace_vhost_notify_entry")
+                b.attach_kretprobe(event=vhost_notify_func, fn_name="trace_vhost_notify_return2")
+                vhost_notify_attached = True
+                if args.verbose:
+                    print("Attached to {}".format(vhost_notify_func))
+            except Exception as e:
+                if args.verbose:
+                    print("Failed to attach to {}: {}".format(vhost_notify_func, e))
+
         if not vhost_notify_attached:
-            print("Warning: Could not attach to vhost_notify (function may be inlined differently)")
+            print("Warning: Could not attach to vhost_notify (function not found or attach failed)")
             print("Continuing without vhost_notify monitoring...")
         
         if args.verbose:

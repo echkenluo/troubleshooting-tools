@@ -13,3 +13,4 @@ test/workflow/result/*
 *.pcap
 docs/publish/pptx/node_modules/
 packaging/rpm/output
+*.DS_Store
