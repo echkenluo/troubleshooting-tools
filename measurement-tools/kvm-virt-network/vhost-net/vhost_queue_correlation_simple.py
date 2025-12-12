@@ -219,6 +219,18 @@ struct vhost_poll {
     struct vhost_dev *dev;
 };
 
+// KERNEL_VERSION_5X controls which structure layout to use
+// Set via Python based on kernel version detection
+#ifndef KERNEL_VERSION_5X
+#define KERNEL_VERSION_5X 0
+#endif
+
+// DEBUG_ENABLED controls debug instrumentation compilation
+// Set via Python based on --debug flag
+#ifndef DEBUG_ENABLED
+#define DEBUG_ENABLED 0
+#endif
+
 struct vhost_dev {
     struct mm_struct *mm;
     struct mutex mutex;
@@ -236,6 +248,13 @@ struct vhost_dev {
     int iov_limit;
     int weight;
     int byte_weight;
+#if KERNEL_VERSION_5X
+    // Kernel 5.x added fields - padding to match actual structure size
+    // Required for correct vqs[0].vq offset: 0xc8 (200 bytes) vs 4.x: 0xb0 (176 bytes)
+    bool use_worker;                        // 1 byte + 7 padding = 8 bytes
+    void *msg_handler;                      // 8 bytes (function pointer)
+    char __padding_dev[16];                 // Additional padding: 16 bytes
+#endif
 };
 
 // irq_bypass_producer structure (kernel 5.x+)
@@ -257,12 +276,6 @@ struct vhost_vring_call {
     struct eventfd_ctx *ctx;                // 8 bytes
     struct irq_bypass_producer producer;    // 64 bytes
 };  // Total: 72 bytes
-
-// KERNEL_VERSION_5X controls which structure layout to use
-// Set via Python based on kernel version detection
-#ifndef KERNEL_VERSION_5X
-#define KERNEL_VERSION_5X 0
-#endif
 
 // VHOST_NOTIFY_CONSTPROP indicates if vhost_notify is a .constprop variant
 // GCC constprop optimization may eliminate the first parameter (vhost_dev*)
@@ -416,7 +429,9 @@ BPF_HASH(vhost_notify_params, u64, struct vhost_virtqueue*, 256);
 //        10=last_vhost_notify_sock_ptr (low 32), 11=last_vhost_notify_sock_ptr (high 32)
 //        12=last_vq_ptr (low 32), 13=last_vq_ptr (high 32)
 //        14=private_data_offset, 15=reserved
+#if DEBUG_ENABLED
 BPF_ARRAY(debug_stats, u64, 16);
+#endif
 
 // Device filter logic
 static inline int name_filter(struct net_device *dev){
@@ -453,6 +468,7 @@ static inline void get_vhost_vq_state(struct vhost_virtqueue *vq, struct queue_e
     READ_FIELD(&event->acked_backend_features, vq, acked_backend_features);
 }
 
+#if DEBUG_ENABLED
 // Debug helper to increment counter
 static inline void debug_inc(int idx) {
     u64 *val = debug_stats.lookup(&idx);
@@ -469,6 +485,11 @@ static inline void debug_store_ptr(int idx_low, u64 ptr) {
     if (lo) *lo = ptr & 0xFFFFFFFF;
     if (hi) *hi = (ptr >> 32) & 0xFFFFFFFF;
 }
+#else
+// No-op when debug disabled
+#define debug_inc(idx) do {} while(0)
+#define debug_store_ptr(idx_low, ptr) do {} while(0)
+#endif
 
 // Stage 1: tun_net_xmit - Only track queue, no output
 int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
@@ -601,12 +622,14 @@ int trace_vhost_notify_entry(struct pt_regs *ctx) {
     // Store vq pointer for debugging
     debug_store_ptr(12, (u64)vq);
 
+#if DEBUG_ENABLED
     // Store the offset of private_data for debugging
     int idx_offset = 14;
     u64 *offset_ptr = debug_stats.lookup(&idx_offset);
     if (offset_ptr) {
         *offset_ptr = offsetof(struct vhost_virtqueue, private_data);
     }
+#endif
 
     // Get sock pointer
     void *private_data = NULL;
@@ -860,6 +883,8 @@ Examples:
             defines.append("#define KERNEL_VERSION_5X 1")
         if is_constprop:
             defines.append("#define VHOST_NOTIFY_CONSTPROP 1")
+        if args.debug:
+            defines.append("#define DEBUG_ENABLED 1")
 
         if defines:
             bpf_program = "\n".join(defines) + "\n" + bpf_program
@@ -944,6 +969,9 @@ Examples:
 
     def print_debug_stats():
         """Print debug statistics from BPF map"""
+        if "debug_stats" not in b:
+            print("\n[DEBUG] debug_stats map not available (DEBUG_ENABLED=0)")
+            return
         debug_map = b["debug_stats"]
         stats = {i: debug_map[i].value for i in range(16)}
 

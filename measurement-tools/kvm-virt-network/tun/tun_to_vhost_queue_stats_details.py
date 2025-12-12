@@ -110,6 +110,13 @@ bpf_text = """
 #define MAX_QUEUES 256
 #define IFNAMSIZ 16
 
+// DEBUG_ENABLED controls debug instrumentation compilation
+// Set via Python based on --debug flag
+#ifndef DEBUG_ENABLED
+#define DEBUG_ENABLED 0
+#endif
+
+#if DEBUG_ENABLED
 // Debug framework - stage_id + code_point encoding
 BPF_HISTOGRAM(debug_stage_stats, u32);
 
@@ -117,6 +124,10 @@ static __always_inline void debug_inc(u8 stage_id, u8 code_point) {
     u32 key = ((u32)stage_id << 8) | code_point;
     debug_stage_stats.increment(key);
 }
+#else
+// No-op when debug disabled
+#define debug_inc(stage_id, code_point) do {} while(0)
+#endif
 
 // Stage IDs
 #define STAGE_TUN_XMIT      0
@@ -133,10 +144,12 @@ static __always_inline void debug_inc(u8 stage_id, u8 code_point) {
 #define CODE_VQ_READ            6
 #define CODE_HISTOGRAM_UPDATE   7
 
+#if DEBUG_ENABLED
 // Debug: track sock pointers seen in handle_rx
 BPF_HASH(debug_handle_rx_socks, u64, u64, 256);  // sock_ptr -> count
 BPF_HASH(debug_vq_ptrs, u64, u64, 256);  // vq_ptr -> private_data
 BPF_HASH(debug_signal_vq_ptrs, u64, u64, 256);  // vq_ptr -> private_data from vhost_signal
+#endif
 
 // Device name union for efficient comparison
 union name_buf {
@@ -557,8 +570,10 @@ int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_devi
     return 0;
 }
 
+#if DEBUG_ENABLED
 // Debug: track computed offsets
 BPF_HASH(debug_handle_rx_net_ptrs, u64, u64, 64);  // net_ptr -> vq_ptr computed
+#endif
 
 // Stage 2: handle_rx - Track VQ state
 int trace_handle_rx(struct pt_regs *ctx) {
@@ -574,21 +589,28 @@ int trace_handle_rx(struct pt_regs *ctx) {
     struct vhost_net_virtqueue *nvq = &net->vqs[0];
     struct vhost_virtqueue *vq = &nvq->vq;
 
+#if DEBUG_ENABLED
     // Debug: track net pointer and computed VQ pointer
     u64 net_ptr_val = (u64)net;
     u64 vq_ptr_val = (u64)vq;
     debug_handle_rx_net_ptrs.update(&net_ptr_val, &vq_ptr_val);
+#endif
 
-    // Debug: track VQ pointer and its private_data
+    // Get VQ pointer and its private_data
     u64 vq_ptr = (u64)vq;
     void *private_data = NULL;
     READ_FIELD(&private_data, vq, private_data);
     u64 pd_val = (u64)private_data;
+
+#if DEBUG_ENABLED
+    // Debug: track VQ pointer and its private_data
     debug_vq_ptrs.update(&vq_ptr, &pd_val);
+#endif
 
     u64 sock_ptr = pd_val;
     debug_inc(STAGE_HANDLE_RX, CODE_SOCK_LOOKUP);
 
+#if DEBUG_ENABLED
     // Debug: track this sock pointer
     u64 one = 1;
     u64 *cnt = debug_handle_rx_socks.lookup(&sock_ptr);
@@ -597,6 +619,7 @@ int trace_handle_rx(struct pt_regs *ctx) {
     } else {
         debug_handle_rx_socks.update(&sock_ptr, &one);
     }
+#endif
 
     // Check if this is our target queue (ONLY sock-based filtering)
     struct queue_key *qkey = target_queues.lookup(&sock_ptr);
@@ -698,8 +721,10 @@ int trace_tun_recvmsg_entry(struct pt_regs *ctx, struct socket *sock, struct msg
     return 0;
 }
 
+#if DEBUG_ENABLED
 // Debug: track vhost_signal dev and vq pointers
 BPF_HASH(debug_signal_dev_vq, u64, u64, 64);  // dev_ptr -> vq_ptr from vhost_signal
+#endif
 
 // Stage 4: vhost_signal - Track VQ state at signal time
 int trace_vhost_signal(struct pt_regs *ctx) {
@@ -710,10 +735,12 @@ int trace_vhost_signal(struct pt_regs *ctx) {
 
     debug_inc(STAGE_VHOST_SIGNAL, CODE_PROBE_ENTRY);
 
+#if DEBUG_ENABLED
     // Debug: track dev and vq from signal
     u64 dev_ptr_val = (u64)dev;
     u64 vq_ptr_val = (u64)vq;
     debug_signal_dev_vq.update(&dev_ptr_val, &vq_ptr_val);
+#endif
 
     // Get sock pointer from private_data using READ_FIELD
     void *private_data = NULL;
@@ -721,9 +748,11 @@ int trace_vhost_signal(struct pt_regs *ctx) {
 
     u64 sock_ptr = (u64)private_data;
 
+#if DEBUG_ENABLED
     // Debug: track VQ pointer and its private_data in vhost_signal
     u64 vq_ptr = (u64)vq;
     debug_signal_vq_ptrs.update(&vq_ptr, &sock_ptr);
+#endif
     
     // Check if this is our target queue (ONLY sock-based filtering)
     struct queue_key *qkey = target_queues.lookup(&sock_ptr);
@@ -1060,12 +1089,14 @@ Examples:
     else:
         print("Warning: handle_rx not found, handle_rx stats will be unavailable")
 
-    # Load BPF program with kernel version defines
+    # Load BPF program with kernel version and debug defines
     try:
         bpf_program = bpf_text
         defines = []
         if kernel_5x:
             defines.append("#define KERNEL_VERSION_5X 1")
+        if args.debug:
+            defines.append("#define DEBUG_ENABLED 1")
 
         if defines:
             bpf_program = "\n".join(defines) + "\n" + bpf_program
