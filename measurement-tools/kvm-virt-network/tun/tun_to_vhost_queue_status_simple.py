@@ -82,13 +82,63 @@ def get_kernel_version():
     except Exception:
         return (0, 0)
 
-def is_kernel_5x_or_later():
+def get_distro_id():
     """
-    Check if kernel is 5.x or later.
-    vhost_vring_call structure changed in kernel 5.x (call_ctx became a struct).
+    Get distribution ID from /etc/os-release.
+    Returns lowercase distro ID (e.g., 'openeuler', 'centos', 'anolis') or 'unknown'.
+    """
+    try:
+        with open('/etc/os-release', 'r') as f:
+            for line in f:
+                if line.startswith('ID='):
+                    # Remove quotes and newline, convert to lowercase
+                    distro_id = line.split('=')[1].strip().strip('"').lower()
+                    return distro_id
+    except Exception:
+        pass
+    return 'unknown'
+
+def has_irqbypass_module():
+    """
+    Check if irqbypass kernel module is loaded/available.
+    This indicates the kernel has IRQ bypass support for vhost.
+    """
+    import os
+    return os.path.exists('/sys/module/irqbypass')
+
+def needs_5x_vhost_layout():
+    """
+    Check if kernel needs 5.x vhost structure layout.
+
+    The vhost_virtqueue structure changed in kernels with IRQ bypass support:
+    - Old (4.x): call_ctx is struct eventfd_ctx* (8 bytes pointer)
+    - New (5.x with irqbypass): call_ctx is struct vhost_vring_call (72 bytes)
+      containing eventfd_ctx* + irq_bypass_producer (64 bytes)
+
+    This 64-byte difference affects private_data offset calculation.
+
+    Detection method: Check if irqbypass module exists in /sys/module/
+    This is more reliable than distro detection as it directly reflects
+    the actual kernel configuration.
+
+    Returns True if 5.x layout (with vhost_vring_call) is needed.
     """
     major, minor = get_kernel_version()
-    return major >= 5
+    if major < 5:
+        return False
+
+    # Primary detection: check if irqbypass module is loaded
+    # This directly indicates whether kernel has IRQ bypass support
+    if has_irqbypass_module():
+        return True
+
+    # Fallback: openEuler 5.x without irqbypass uses 4.x layout
+    distro = get_distro_id()
+    if distro == 'openeuler':
+        return False
+
+    # Other 5.x kernels typically use 5.x layout
+    return True
 
 # Simple BPF program for queue statistics - only tun_net_xmit and vhost_signal
 bpf_text = """
@@ -692,10 +742,11 @@ Examples:
     args = parser.parse_args()
     countdown = args.outputs
 
-    # Detect kernel version and find functions dynamically
-    kernel_5x = is_kernel_5x_or_later()
+    # Detect kernel version, distro and find functions dynamically
+    kernel_5x = needs_5x_vhost_layout()
     major, minor = get_kernel_version()
-    print("Kernel version: {}.{} (5.x structure layout: {})".format(major, minor, kernel_5x))
+    distro = get_distro_id()
+    print("Kernel version: {}.{}, Distro: {} (5.x vhost layout: {})".format(major, minor, distro, kernel_5x))
 
     # Find vhost_add_used_and_signal_n function (handles module symbols and GCC suffixes)
     vhost_signal_func = find_kernel_function("vhost_add_used_and_signal_n", verbose=True)
