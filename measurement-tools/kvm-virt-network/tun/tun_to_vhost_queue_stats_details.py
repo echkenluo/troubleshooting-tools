@@ -7,6 +7,8 @@ import socket
 import struct
 import sys
 import datetime
+import re
+import platform
 # BCC module import with fallback
 try:
     from bcc import BPF
@@ -27,6 +29,67 @@ from time import sleep, strftime
 class Devname(ct.Structure):
     _fields_=[("name", ct.c_char*16)]
 
+def find_kernel_function(base_name, verbose=False):
+    """
+    Find actual kernel function name, handling GCC clone suffixes.
+    GCC may generate optimized clones with suffixes like:
+      .isra.N     - Inter-procedural Scalar Replacement of Aggregates
+      .constprop.N - Constant Propagation
+      .part.N     - Partial inlining
+      .cold/.hot  - Code path optimization
+    Returns the actual symbol name or None if not found.
+    """
+    # Pattern handles both vmlinux and module symbols:
+    #   vmlinux: "ffffffff81234567 t func_name"
+    #   module:  "ffffffffc1234567 t func_name\t[module_name]"
+    pattern = re.compile(
+        r'^[0-9a-f]+\s+[tT]\s+(' + re.escape(base_name) +
+        r'(?:\.(?:isra|constprop|part|cold|hot)\.\d+)*)(?:\s+\[\w+\])?$'
+    )
+
+    candidates = []
+    try:
+        with open('/proc/kallsyms', 'r') as f:
+            for line in f:
+                match = pattern.match(line.strip())
+                if match:
+                    candidates.append(match.group(1))
+    except Exception as e:
+        if verbose:
+            print("Warning: Failed to read /proc/kallsyms: {}".format(e))
+        return None
+
+    if not candidates:
+        if verbose:
+            print("Warning: Function {} not found in /proc/kallsyms".format(base_name))
+        return None
+
+    # Prefer exact match, then shortest name (fewer suffixes)
+    if base_name in candidates:
+        return base_name
+    return min(candidates, key=len)
+
+def get_kernel_version():
+    """
+    Get kernel major.minor version tuple.
+    Returns (major, minor) or (0, 0) on error.
+    """
+    try:
+        version_str = platform.release()
+        # Extract version numbers (e.g., "5.10.0-247.0.0.el7.v72.x86_64" -> (5, 10))
+        parts = version_str.split('-')[0].split('.')
+        return (int(parts[0]), int(parts[1]))
+    except Exception:
+        return (0, 0)
+
+def is_kernel_5x_or_later():
+    """
+    Check if kernel is 5.x or later.
+    vhost_vring_call structure changed in kernel 5.x (call_ctx became a struct).
+    """
+    major, minor = get_kernel_version()
+    return major >= 5
+
 # BPF program for queue statistics using histograms
 bpf_text = """
 #include <linux/skbuff.h>
@@ -46,6 +109,34 @@ bpf_text = """
 #define NETDEV_ALIGN 32
 #define MAX_QUEUES 256
 #define IFNAMSIZ 16
+
+// Debug framework - stage_id + code_point encoding
+BPF_HISTOGRAM(debug_stage_stats, u32);
+
+static __always_inline void debug_inc(u8 stage_id, u8 code_point) {
+    u32 key = ((u32)stage_id << 8) | code_point;
+    debug_stage_stats.increment(key);
+}
+
+// Stage IDs
+#define STAGE_TUN_XMIT      0
+#define STAGE_HANDLE_RX     1
+#define STAGE_TUN_RECVMSG   2
+#define STAGE_VHOST_SIGNAL  3
+
+// Code points
+#define CODE_PROBE_ENTRY        1
+#define CODE_NULL_CHECK_FAIL    2
+#define CODE_SOCK_LOOKUP        3
+#define CODE_SOCK_FOUND         4
+#define CODE_SOCK_NOT_FOUND     5
+#define CODE_VQ_READ            6
+#define CODE_HISTOGRAM_UPDATE   7
+
+// Debug: track sock pointers seen in handle_rx
+BPF_HASH(debug_handle_rx_socks, u64, u64, 256);  // sock_ptr -> count
+BPF_HASH(debug_vq_ptrs, u64, u64, 256);  // vq_ptr -> private_data
+BPF_HASH(debug_signal_vq_ptrs, u64, u64, 256);  // vq_ptr -> private_data from vhost_signal
 
 // Device name union for efficient comparison
 union name_buf {
@@ -153,6 +244,12 @@ struct vhost_poll {
     struct vhost_dev *dev;
 };
 
+// KERNEL_VERSION_5X controls which structure layout to use
+// Set via Python based on kernel version detection
+#ifndef KERNEL_VERSION_5X
+#define KERNEL_VERSION_5X 0
+#endif
+
 struct vhost_dev {
     struct mm_struct *mm;
     struct mutex mutex;
@@ -170,23 +267,45 @@ struct vhost_dev {
     int iov_limit;
     int weight;
     int byte_weight;
+#if KERNEL_VERSION_5X
+    // Kernel 5.x added fields - padding to match actual structure size
+    // Required for correct vqs[0].vq offset: 0xc8 (200 bytes) vs 4.x: 0xb0 (176 bytes)
+    bool use_worker;                        // 1 byte + 7 padding = 8 bytes
+    void *msg_handler;                      // 8 bytes (function pointer)
+    char __padding_dev[16];                 // Additional padding: 16 bytes
+#endif
 };
+
+// Kernel 5.x introduced vhost_vring_call structure for IRQ bypass
+// Total size: 72 bytes on x86_64
+struct vhost_vring_call {
+    struct eventfd_ctx *ctx;                // 8 bytes (0x00-0x07)
+    char irq_bypass_producer[64];           // 64 bytes (0x08-0x47) - struct irq_bypass_producer
+};  // Total: 72 bytes
 
 struct vhost_virtqueue {
     struct vhost_dev *dev;
-    
+
     // The actual ring of buffers
     struct mutex mutex;
     unsigned int num;
     struct vring_desc *desc;       // __user pointer
-    struct vring_avail *avail;     // __user pointer 
+    struct vring_avail *avail;     // __user pointer
     struct vring_used *used;       // __user pointer
     void *meta_iotlb[3];           // VHOST_NUM_ADDRS = 3
     struct file *kick;
+
+#if KERNEL_VERSION_5X
+    // Kernel 5.x+: call_ctx is a struct containing irq_bypass_producer
+    struct vhost_vring_call call_ctx;
+#else
+    // Kernel 4.x: call_ctx is just a pointer
     struct eventfd_ctx *call_ctx;
+#endif
+
     struct eventfd_ctx *error_ctx;
     struct eventfd_ctx *log_ctx;
-    
+
     struct vhost_poll poll;
     
     // The routine to call when the Guest pings us, or timeout
@@ -438,27 +557,55 @@ int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_devi
     return 0;
 }
 
+// Debug: track computed offsets
+BPF_HASH(debug_handle_rx_net_ptrs, u64, u64, 64);  // net_ptr -> vq_ptr computed
+
 // Stage 2: handle_rx - Track VQ state
 int trace_handle_rx(struct pt_regs *ctx) {
+    debug_inc(STAGE_HANDLE_RX, CODE_PROBE_ENTRY);
+
     struct vhost_net *net = (struct vhost_net *)PT_REGS_PARM1(ctx);
-    if (!net) return 0;
-    
+    if (!net) {
+        debug_inc(STAGE_HANDLE_RX, CODE_NULL_CHECK_FAIL);
+        return 0;
+    }
+
     // Get RX virtqueue (vqs[0].vq) using member_read
     struct vhost_net_virtqueue *nvq = &net->vqs[0];
     struct vhost_virtqueue *vq = &nvq->vq;
-    
-    // Get sock pointer from private_data using READ_FIELD  
+
+    // Debug: track net pointer and computed VQ pointer
+    u64 net_ptr_val = (u64)net;
+    u64 vq_ptr_val = (u64)vq;
+    debug_handle_rx_net_ptrs.update(&net_ptr_val, &vq_ptr_val);
+
+    // Debug: track VQ pointer and its private_data
+    u64 vq_ptr = (u64)vq;
     void *private_data = NULL;
     READ_FIELD(&private_data, vq, private_data);
-    
-    u64 sock_ptr = (u64)private_data;
-    
+    u64 pd_val = (u64)private_data;
+    debug_vq_ptrs.update(&vq_ptr, &pd_val);
+
+    u64 sock_ptr = pd_val;
+    debug_inc(STAGE_HANDLE_RX, CODE_SOCK_LOOKUP);
+
+    // Debug: track this sock pointer
+    u64 one = 1;
+    u64 *cnt = debug_handle_rx_socks.lookup(&sock_ptr);
+    if (cnt) {
+        (*cnt)++;
+    } else {
+        debug_handle_rx_socks.update(&sock_ptr, &one);
+    }
+
     // Check if this is our target queue (ONLY sock-based filtering)
     struct queue_key *qkey = target_queues.lookup(&sock_ptr);
     if (!qkey) {
+        debug_inc(STAGE_HANDLE_RX, CODE_SOCK_NOT_FOUND);
         return 0;  // Not our target queue
     }
-    
+    debug_inc(STAGE_HANDLE_RX, CODE_SOCK_FOUND);
+
     // Track this VQ for signal filtering
     u64 vq_addr = (u64)vq;
     handle_rx_vqs.update(&sock_ptr, &vq_addr);
@@ -551,18 +698,32 @@ int trace_tun_recvmsg_entry(struct pt_regs *ctx, struct socket *sock, struct msg
     return 0;
 }
 
+// Debug: track vhost_signal dev and vq pointers
+BPF_HASH(debug_signal_dev_vq, u64, u64, 64);  // dev_ptr -> vq_ptr from vhost_signal
+
 // Stage 4: vhost_signal - Track VQ state at signal time
 int trace_vhost_signal(struct pt_regs *ctx) {
     void *dev = (void *)PT_REGS_PARM1(ctx);
     struct vhost_virtqueue *vq = (struct vhost_virtqueue *)PT_REGS_PARM2(ctx);
-    
+
     if (!vq) return 0;
-    
-    // Get sock pointer from private_data using READ_FIELD  
+
+    debug_inc(STAGE_VHOST_SIGNAL, CODE_PROBE_ENTRY);
+
+    // Debug: track dev and vq from signal
+    u64 dev_ptr_val = (u64)dev;
+    u64 vq_ptr_val = (u64)vq;
+    debug_signal_dev_vq.update(&dev_ptr_val, &vq_ptr_val);
+
+    // Get sock pointer from private_data using READ_FIELD
     void *private_data = NULL;
     READ_FIELD(&private_data, vq, private_data);
-    
+
     u64 sock_ptr = (u64)private_data;
+
+    // Debug: track VQ pointer and its private_data in vhost_signal
+    u64 vq_ptr = (u64)vq;
+    debug_signal_vq_ptrs.update(&vq_ptr, &sock_ptr);
     
     // Check if this is our target queue (ONLY sock-based filtering)
     struct queue_key *qkey = target_queues.lookup(&sock_ptr);
@@ -875,20 +1036,72 @@ Examples:
     parser.add_argument("--interval", "-i", type=int, default=1, help="Output interval in seconds (default: 1)")
     parser.add_argument("outputs", nargs="?", type=int, default=99999999, help="Number of outputs (default: unlimited)")
     parser.add_argument("--timestamp", "-T", action="store_true", help="Include timestamp on output")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output (sock pointers, VQ offsets)")
     
     args = parser.parse_args()
     countdown = args.outputs
-    
-    # Load BPF program
+
+    # Detect kernel version and find functions dynamically
+    kernel_5x = is_kernel_5x_or_later()
+    major, minor = get_kernel_version()
+    print("Kernel version: {}.{} (5.x structure layout: {})".format(major, minor, kernel_5x))
+
+    # Find vhost_add_used_and_signal_n function (handles module symbols and GCC suffixes)
+    vhost_signal_func = find_kernel_function("vhost_add_used_and_signal_n", verbose=True)
+    if vhost_signal_func:
+        print("Found vhost signal function: {}".format(vhost_signal_func))
+    else:
+        print("Warning: vhost_add_used_and_signal_n not found, signal stats will be unavailable")
+
+    # Find handle_rx function (in vhost_net module)
+    handle_rx_func = find_kernel_function("handle_rx", verbose=True)
+    if handle_rx_func:
+        print("Found handle_rx function: {}".format(handle_rx_func))
+    else:
+        print("Warning: handle_rx not found, handle_rx stats will be unavailable")
+
+    # Load BPF program with kernel version defines
     try:
-        b = BPF(text=bpf_text)
-        
+        bpf_program = bpf_text
+        defines = []
+        if kernel_5x:
+            defines.append("#define KERNEL_VERSION_5X 1")
+
+        if defines:
+            bpf_program = "\n".join(defines) + "\n" + bpf_program
+
+        b = BPF(text=bpf_program)
+
         # Attach kprobes
         b.attach_kprobe(event="tun_net_xmit", fn_name="trace_tun_net_xmit")
-        b.attach_kprobe(event="handle_rx", fn_name="trace_handle_rx")
         b.attach_kprobe(event="tun_recvmsg", fn_name="trace_tun_recvmsg_entry")
-        b.attach_kprobe(event="vhost_add_used_and_signal_n", fn_name="trace_vhost_signal")
-        
+
+        # Attach handle_rx with dynamic function name
+        handle_rx_attached = False
+        if handle_rx_func:
+            try:
+                b.attach_kprobe(event=handle_rx_func, fn_name="trace_handle_rx")
+                handle_rx_attached = True
+                print("Attached to {}".format(handle_rx_func))
+            except Exception as e:
+                print("Warning: Failed to attach to {}: {}".format(handle_rx_func, e))
+
+        if not handle_rx_attached:
+            print("Warning: handle_rx probe not attached, handle_rx stats will be unavailable")
+
+        # Attach vhost_add_used_and_signal_n with dynamic function name
+        vhost_signal_attached = False
+        if vhost_signal_func:
+            try:
+                b.attach_kprobe(event=vhost_signal_func, fn_name="trace_vhost_signal")
+                vhost_signal_attached = True
+                print("Attached to {}".format(vhost_signal_func))
+            except Exception as e:
+                print("Warning: Failed to attach to {}: {}".format(vhost_signal_func, e))
+
+        if not vhost_signal_attached:
+            print("Warning: vhost_signal probe not attached, signal stats will be unavailable")
+
     except Exception as e:
         print("Failed to load BPF program: {}".format(e))
         return
@@ -964,7 +1177,66 @@ Examples:
                 import datetime
                 now = datetime.datetime.now()
                 print("Time: {}".format(now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]))
-            
+
+            # Print debug statistics (only with --debug flag)
+            if args.debug:
+                print("\n[DEBUG] Stage Statistics:")
+                stage_names = {0: "TUN_XMIT", 1: "HANDLE_RX", 2: "TUN_RECVMSG", 3: "VHOST_SIGNAL"}
+                code_names = {1: "PROBE_ENTRY", 2: "NULL_CHECK_FAIL", 3: "SOCK_LOOKUP",
+                             4: "SOCK_FOUND", 5: "SOCK_NOT_FOUND", 6: "VQ_READ", 7: "HISTOGRAM_UPDATE"}
+                debug_stats = b.get_table("debug_stage_stats")
+                for k, v in sorted(debug_stats.items(), key=lambda x: x[0].value):
+                    if v.value > 0:
+                        stage_id = k.value >> 8
+                        code_point = k.value & 0xFF
+                        stage_name = stage_names.get(stage_id, "STAGE_%d" % stage_id)
+                        code_name = code_names.get(code_point, "CODE_%d" % code_point)
+                        print("  {}.{}: {}".format(stage_name, code_name, v.value))
+                debug_stats.clear()
+
+                print("\n[DEBUG] Sock Pointers from tun_net_xmit (target_queues):")
+                for sock_ptr, qkey in target_queues_map.items():
+                    print("  sock: 0x{:x} -> {}:q{}".format(sock_ptr.value,
+                        qkey.dev_name.decode('utf-8', 'replace'), qkey.queue_index))
+
+                print("\n[DEBUG] Sock Pointers from handle_rx (top 10):")
+                debug_rx_socks = b.get_table("debug_handle_rx_socks")
+                rx_socks = sorted(debug_rx_socks.items(), key=lambda x: x[1].value, reverse=True)[:10]
+                for sock_ptr, cnt in rx_socks:
+                    print("  sock: 0x{:x} -> count: {}".format(sock_ptr.value, cnt.value))
+                debug_rx_socks.clear()
+
+                print("\n[DEBUG] handle_rx net -> computed VQ (top 10):")
+                debug_net_vq = b.get_table("debug_handle_rx_net_ptrs")
+                net_vq_list = list(debug_net_vq.items())[:10]
+                for net_ptr, vq_ptr in net_vq_list:
+                    offset = vq_ptr.value - net_ptr.value if vq_ptr.value > net_ptr.value else 0
+                    print("  net: 0x{:x} -> vq: 0x{:x} (offset: 0x{:x} = {} bytes)".format(
+                        net_ptr.value, vq_ptr.value, offset, offset))
+                debug_net_vq.clear()
+
+                print("\n[DEBUG] VQ Pointers -> private_data (handle_rx, top 10):")
+                debug_vq = b.get_table("debug_vq_ptrs")
+                vq_list = list(debug_vq.items())[:10]
+                for vq_ptr, pd in vq_list:
+                    print("  vq: 0x{:x} -> private_data: 0x{:x}".format(vq_ptr.value, pd.value))
+                debug_vq.clear()
+
+                print("\n[DEBUG] vhost_signal dev -> VQ (top 10):")
+                debug_dev_vq = b.get_table("debug_signal_dev_vq")
+                dev_vq_list = list(debug_dev_vq.items())[:10]
+                for dev_ptr, vq_ptr in dev_vq_list:
+                    print("  dev: 0x{:x} -> vq: 0x{:x}".format(dev_ptr.value, vq_ptr.value))
+                debug_dev_vq.clear()
+
+                print("\n[DEBUG] VQ Pointers -> private_data (vhost_signal, top 10):")
+                debug_signal_vq = b.get_table("debug_signal_vq_ptrs")
+                signal_vq_list = list(debug_signal_vq.items())[:10]
+                for vq_ptr, pd in signal_vq_list:
+                    match_status = "MATCH" if any(sp.value == pd.value for sp in target_queues_map.keys()) else "NO MATCH"
+                    print("  vq: 0x{:x} -> private_data: 0x{:x} [{}]".format(vq_ptr.value, pd.value, match_status))
+                debug_signal_vq.clear()
+
             # Print VQ Consumption Progress Distribution from handle_rx
             print("\nVQ Consumption Progress Distribution at handle_rx (avail_idx - last_avail_idx):")
             print("Shows how many descriptors are available for consumption when VHOST handles RX")
