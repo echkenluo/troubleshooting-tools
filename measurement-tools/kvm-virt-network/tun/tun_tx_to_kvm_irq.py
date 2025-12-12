@@ -5,16 +5,35 @@
 TUN TX Queue Interrupt Trace Tool
 
 Traces the complete interrupt chain for specified TUN TX queue:
-tun_net_xmit -> vhost_signal -> irqfd_wakeup
 
-Based on proven implementation from vhost_queue_correlation_monitor.py
-Implements ultra ultra think design with precise probe point chaining.
+Kernel call chain:
+  tun_net_xmit -> vhost_signal -> eventfd_signal -> irqfd_wakeup -> posted_int
+
+Stage definitions (ordered by execution sequence):
+  Stage 1: tun_net_xmit       - Packet enters TUN device
+  Stage 2: vhost_signal       - vhost signals eventfd to notify KVM
+  Stage 3: eventfd_signal     - eventfd entry point (called by vhost_signal)
+  Stage 4: irqfd_wakeup       - KVM interrupt injection (key correlation point)
+  Stage 5: posted_int         - Hardware posted interrupt delivery to vCPU
+
+Correlation mechanism:
+  - Stage 1->2: socket pointer (vq->private_data == &tfile->socket)
+  - Stage 2->3->4: eventfd_ctx pointer (vq->call_ctx.ctx == eventfd == irqfd->eventfd)
+  - Stage 4->5: GSI/vector (irqfd->gsi == vmx_deliver_posted_interrupt vector param)
+
+Note: For MSI-X interrupts, QEMU typically configures GSI == Vector in the routing
+table, enabling direct correlation between Stage 4 (irqfd_wakeup) and Stage 5
+(vmx_deliver_posted_interrupt).
+
+Based on proven implementation from vhost_queue_correlation_monitor.py.
 """
 
 from __future__ import print_function
 import argparse
 import datetime
 import json
+import re
+import struct
 # BCC module import with fallback
 try:
     from bcc import BPF
@@ -31,6 +50,76 @@ except ImportError:
         sys.exit(1)
 import ctypes as ct
 from time import sleep
+
+# Kernel version detection and compatibility functions
+def get_kernel_version():
+    """
+    Get kernel major.minor version tuple.
+    Returns (major, minor) or (0, 0) on error.
+    """
+    try:
+        import platform
+        version_str = platform.release()
+        parts = version_str.split('-')[0].split('.')
+        return (int(parts[0]), int(parts[1]))
+    except Exception:
+        return (0, 0)
+
+def get_distro_id():
+    """
+    Get distribution ID from /etc/os-release.
+    Returns lowercase distro ID (e.g., 'openeuler', 'centos', 'anolis') or 'unknown'.
+    """
+    try:
+        with open('/etc/os-release', 'r') as f:
+            for line in f:
+                if line.startswith('ID='):
+                    distro_id = line.split('=')[1].strip().strip('"').lower()
+                    return distro_id
+    except Exception:
+        pass
+    return 'unknown'
+
+def has_irqbypass_module():
+    """
+    Check if irqbypass kernel module is loaded/available.
+    This indicates the kernel has IRQ bypass support for vhost.
+    """
+    import os
+    return os.path.exists('/sys/module/irqbypass')
+
+def needs_5x_vhost_layout():
+    """
+    Check if kernel needs 5.x vhost structure layout.
+
+    The vhost_virtqueue structure changed in kernels with IRQ bypass support:
+    - Old (4.x): call_ctx is struct eventfd_ctx* (8 bytes pointer)
+    - New (5.x with irqbypass): call_ctx is struct vhost_vring_call (72 bytes)
+      containing eventfd_ctx* + irq_bypass_producer (64 bytes)
+
+    This 64-byte difference affects call_ctx/error_ctx/log_ctx offset calculation.
+
+    Detection method: Check if irqbypass module exists in /sys/module/
+    This is more reliable than distro detection as it directly reflects
+    the actual kernel configuration.
+
+    Returns True if 5.x layout (with vhost_vring_call) is needed.
+    """
+    major, minor = get_kernel_version()
+    if major < 5:
+        return False
+
+    # Primary detection: check if irqbypass module is loaded
+    if has_irqbypass_module():
+        return True
+
+    # Fallback: openEuler 5.x without irqbypass uses 4.x layout
+    distro = get_distro_id()
+    if distro == 'openeuler':
+        return False
+
+    # Other 5.x kernels typically use 5.x layout
+    return True
 
 # Data structures based on vhost_queue_correlation_monitor.py
 class Devname(ct.Structure):
@@ -209,53 +298,89 @@ struct vhost_dev {
     int byte_weight;
 };
 
+// irq_bypass_producer structure (kernel 5.x+)
+// Used in vhost_vring_call for IRQ bypass support
+// Renamed to avoid conflict with kernel header
+struct bpf_irq_bypass_producer {
+    struct list_head node;          // 16 bytes
+    void *token;                    // 8 bytes
+    int irq;                        // 4 bytes
+    int padding;                    // 4 bytes alignment
+    void *add_consumer;             // 8 bytes (function pointer)
+    void *del_consumer;             // 8 bytes
+    void *stop;                     // 8 bytes
+    void *start;                    // 8 bytes
+};  // Total: 64 bytes
+
+// vhost_vring_call structure (kernel 5.x+)
+// Replaced simple eventfd_ctx* in newer kernels
+// Renamed to avoid conflict with kernel header
+struct bpf_vhost_vring_call {
+    struct eventfd_ctx *ctx;                // 8 bytes
+    struct bpf_irq_bypass_producer producer;    // 64 bytes
+};  // Total: 72 bytes
+
+// KERNEL_VERSION_5X controls which structure layout to use
+// Set via Python based on kernel version detection
+#ifndef KERNEL_VERSION_5X
+#define KERNEL_VERSION_5X 0
+#endif
+
 struct vhost_virtqueue {
     struct vhost_dev *dev;
-    
+
     // The actual ring of buffers
     struct mutex mutex;
     unsigned int num;
     struct vring_desc *desc;       // __user pointer
-    struct vring_avail *avail;     // __user pointer 
+    struct vring_avail *avail;     // __user pointer
     struct vring_used *used;       // __user pointer
     void *meta_iotlb[3];           // VHOST_NUM_ADDRS = 3
     struct file *kick;
+
+#if KERNEL_VERSION_5X
+    // Kernel 5.x+: call_ctx is a struct containing irq_bypass_producer
+    struct bpf_vhost_vring_call call_ctx;
+#else
+    // Kernel 4.x: call_ctx is just a pointer
     struct eventfd_ctx *call_ctx;
+#endif
+
     struct eventfd_ctx *error_ctx;
     struct eventfd_ctx *log_ctx;
-    
+
     struct vhost_poll poll;
-    
+
     // The routine to call when the Guest pings us, or timeout
     void *handle_kick;  // vhost_work_fn_t
-    
+
     // Last available index we saw
     u16 last_avail_idx;
-    
+
     // Caches available index value from user
     u16 avail_idx;
-    
+
     // Last index we used
     u16 last_used_idx;
-    
+
     // Used flags
     u16 used_flags;
-    
+
     // Last used index value we have signalled on
     u16 signalled_used;
-    
+
     // Last used index value we have signalled on
     bool signalled_used_valid;
-    
+
     // Log writes to used structure
     bool log_used;
     u64 log_addr;
-    
+
     struct iovec iov[1024];        // UIO_MAXIOV = 1024
     struct iovec iotlb_iov[64];
     struct iovec *indirect;
     struct vring_used_elem *heads;
-    
+
     // Protected by virtqueue mutex
     struct vhost_umem *umem;
     struct vhost_umem *iotlb;
@@ -264,29 +389,31 @@ struct vhost_virtqueue {
     u64 acked_backend_features;
 };
 
-// Complete kvm_kernel_irqfd structure definition - based on virt/kvm/eventfd.c
+// Complete kvm_kernel_irqfd structure definition - based on include/linux/kvm_irqfd.h
+// Note: Fixed layout for CentOS 7 / kernel 4.19.90 - removed non-existent irq_entry_cache field
 struct kvm_kernel_irqfd {
     /* Used for MSI fast-path */
     struct kvm *kvm;
     wait_queue_entry_t wait;
-    /* Update side is protected by irq_lock */
+    /* Update side is protected by irqfds.lock */
     struct kvm_kernel_irq_routing_entry irq_entry;
     seqcount_t irq_entry_sc;
-    /* Used for level-triggered shutdown */
+    /* Used for level IRQ fast-path */
     int gsi;
     struct work_struct inject;
-    struct kvm_kernel_irq_routing_entry *irq_entry_cache;
-    /* Used for resampling */
+    /* The resampler used by this irqfd (resampler-only) */
     void *resampler;  // struct kvm_kernel_irqfd_resampler *
+    /* Eventfd notified on resample (resampler-only) */
     struct eventfd_ctx *resamplefd;
+    /* Entry in list of irqfds for a resampler (resampler-only) */
     struct list_head resampler_link;
-    /* Used for shutdown */
+    /* Used for setup/shutdown */
     struct eventfd_ctx *eventfd;
     struct list_head list;
     poll_table pt;
     struct work_struct shutdown;
-    void *irq_bypass_consumer;   // struct irq_bypass_consumer *
-    void *irq_bypass_producer;   // struct irq_bypass_producer *
+    void *consumer;   // struct irq_bypass_consumer
+    void *producer;   // struct irq_bypass_producer *
 };
 
 // Data structures for interrupt chain tracking
@@ -302,6 +429,15 @@ struct interrupt_connection {
     char dev_name[16];   // Device name
     u32 queue_index;     // Queue index
     u64 timestamp;       // Timestamp for sequence validation
+};
+
+// GSI to queue mapping for Stage 4 -> Stage 5 correlation
+struct gsi_queue_info {
+    u64 eventfd_ctx;     // eventfd_ctx from Stage 4
+    u64 sock_ptr;        // sock_ptr for queue identification
+    char dev_name[16];   // Device name
+    u32 queue_index;     // Queue index
+    u64 timestamp;       // Timestamp from Stage 4
 };
 
 struct interrupt_trace_event {
@@ -329,6 +465,7 @@ struct interrupt_trace_event {
 BPF_HASH(target_queues, u64, struct queue_key, 256);           // sock_ptr -> queue info
 BPF_HASH(interrupt_chains, u64, struct interrupt_connection, 256); // eventfd_ctx -> connection
 BPF_HASH(sequence_check, u64, u64, 256);                       // eventfd_ctx -> last_stage
+BPF_HASH(gsi_to_queue, u32, struct gsi_queue_info, 256);       // gsi -> queue info (Stage 4->5 correlation)
 
 // Device and queue filtering
 BPF_ARRAY(name_map, union name_buf, 1);
@@ -466,31 +603,45 @@ int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_devi
     return 0;
 }
 
-// Stage 2: vhost_signal - Based on proven implementation
+// Stage 2: vhost_add_used_and_signal_n - Based on proven implementation
+// Note: vhost_signal is inlined into vhost_add_used_and_signal_n on kernel 5.x
+// Function signature: vhost_add_used_and_signal_n(dev, vq, heads, count)
+// Same parameters as vhost_signal(dev, vq) in first two positions
 int trace_vhost_signal(struct pt_regs *ctx) {
     void *dev = (void *)PT_REGS_PARM1(ctx);
     struct vhost_virtqueue *vq = (struct vhost_virtqueue *)PT_REGS_PARM2(ctx);
-    
+
     if (!vq) return 0;
-    
+
     // Get sock pointer from private_data using proven approach
     void *private_data = NULL;
     READ_FIELD(&private_data, vq, private_data);
-    
+
     u64 sock_ptr = (u64)private_data;
-    
+
     // Check if this is our target queue (sock-based filtering)
     struct queue_key *qkey = target_queues.lookup(&sock_ptr);
     if (!qkey) {
         return 0;  // Not our target queue
     }
-    
+
     // Get eventfd_ctx for chain connection
-    struct eventfd_ctx *call_ctx = NULL;
-    READ_FIELD(&call_ctx, vq, call_ctx);
-    u64 eventfd_ctx = (u64)call_ctx;
-    
-    if (!call_ctx) return 0;  // Invalid eventfd
+    // Use hardcoded offset because struct mutex size varies between kernel configs
+    // Measured offset on CentOS 5.10: call_ctx.ctx is at offset 104
+    // Measured offset on openEuler 4.19: call_ctx is at offset 104
+    struct eventfd_ctx *eventfd_ptr = NULL;
+#if KERNEL_VERSION_5X
+    // Kernel 5.x: call_ctx.ctx at offset 104 (measured)
+    bpf_probe_read_kernel(&eventfd_ptr, sizeof(eventfd_ptr), (char *)vq + 104);
+#else
+    // Kernel 4.x: call_ctx at offset 104 (same offset, direct pointer)
+    bpf_probe_read_kernel(&eventfd_ptr, sizeof(eventfd_ptr), (char *)vq + 104);
+#endif
+    u64 eventfd_ctx = (u64)eventfd_ptr;
+
+    // Validate eventfd_ctx is a valid kernel pointer
+    // Note: ARM64 kernel pointers can start with 0xff3f... not just 0xffff...
+    if (!eventfd_ptr || eventfd_ctx < 0xff00000000000000ULL) return 0;
     
     // Save interrupt chain connection for irqfd_inject to use
     struct interrupt_connection ic_info = {};
@@ -527,66 +678,98 @@ int trace_vhost_signal(struct pt_regs *ctx) {
     return 0;
 }
 
-// Stage 3: irqfd_wakeup - Using correct container_of and member_read approach
+// Stage 4: irqfd_wakeup - KVM interrupt injection triggered by eventfd
+// Called from within eventfd_signal via wake_up_locked_poll
+// This is the key correlation point with GSI information
+//
+// Kernel structure offsets vary significantly between kernel versions due to
+// different sizes of kvm_kernel_irq_routing_entry and other fields.
+// Measured offsets:
+//   Kernel 5.10: eventfd at offset 232, gsi at offset 72
+//   Kernel 4.19: eventfd at offset 104, gsi at offset 72
 int trace_irqfd_wakeup(struct pt_regs *ctx) {
     wait_queue_entry_t *wait = (wait_queue_entry_t *)PT_REGS_PARM1(ctx);
     void *key = (void *)PT_REGS_PARM4(ctx);
-    
+
     if (!wait) return 0;
-    
-    // Check EPOLLIN flag
+
+    // Check EPOLLIN flag - irqfd_wakeup checks (flags & EPOLLIN) before injecting
     u64 flags = (u64)key;
     if (!(flags & 0x1)) return 0;
-    
-    // Use container_of to get kvm_kernel_irqfd structure
+
+    // Get kvm_kernel_irqfd structure pointer
     // container_of(wait, struct kvm_kernel_irqfd, wait)
-    struct kvm_kernel_irqfd *irqfd = (struct kvm_kernel_irqfd *)
-        ((char *)wait - offsetof(struct kvm_kernel_irqfd, wait));
-        
+    // wait field is at offset 8 in kvm_kernel_irqfd (after kvm pointer)
+    void *irqfd = (void *)((char *)wait - 8);
+
     // Verify irqfd pointer validity
     if (!irqfd) return 0;
-    
-    // Use member_read and READ_FIELD macros to read fields, not hardcoded offsets
+
+    // Read eventfd_ctx and gsi using kernel-version-specific offsets
+    // These offsets were measured on actual kernels using debug probes
     struct eventfd_ctx *eventfd = NULL;
     int gsi = 0;
-    
-    // Read eventfd_ctx field using READ_FIELD macro
-    READ_FIELD(&eventfd, irqfd, eventfd);
-    READ_FIELD(&gsi, irqfd, gsi);
-    
+
+#if KERNEL_VERSION_5X
+    // Kernel 5.10: eventfd at offset 232, gsi at offset 72
+    bpf_probe_read_kernel(&eventfd, sizeof(eventfd), (char *)irqfd + 232);
+    bpf_probe_read_kernel(&gsi, sizeof(gsi), (char *)irqfd + 72);
+#else
+    // Kernel 4.x: eventfd at offset 104, gsi at offset 72
+    bpf_probe_read_kernel(&eventfd, sizeof(eventfd), (char *)irqfd + 104);
+    bpf_probe_read_kernel(&gsi, sizeof(gsi), (char *)irqfd + 72);
+#endif
+
     u64 eventfd_ctx = (u64)eventfd;
-    
+
     // Validate eventfd_ctx is a valid kernel pointer
-    if (!eventfd || eventfd_ctx < 0xffff000000000000ULL) {
+    // Note: ARM64 kernel pointers can start with 0xff3f... not just 0xffff...
+    // Use 0xff00000000000000 as threshold for broader compatibility
+    if (!eventfd || eventfd_ctx < 0xff00000000000000ULL) {
         return 0;
     }
-    
-    // Enhanced chain validation: only fire Stage 3 if Stage 2 created matching eventfd_ctx entry
+
+    // Chain validation: only fire Stage 4 if Stage 3 created matching eventfd_ctx entry
     struct interrupt_connection *ic_info = interrupt_chains.lookup(&eventfd_ctx);
     if (!ic_info) {
-        return 0;  // No matching vhost_signal - invalid chain
+        return 0;  // No matching chain - not our target
     }
-    
+
+    // Check sequence - should be 3 (from eventfd_signal)
+    u64 *last_stage = sequence_check.lookup(&eventfd_ctx);
+    if (!last_stage || *last_stage != 3) {
+        return 0;  // Only emit if we have a valid Stage 3 entry
+    }
+
+    // Validate GSI range for MSI interrupts (typically 24-255)
     if (gsi < 24 || gsi > 255) {
-        return 0;  // Invalid GSI range for MSI interrupts
+        return 0;
     }
-    
+
     u64 timestamp = bpf_ktime_get_ns();
     u64 delay_ns = timestamp - ic_info->timestamp;
-    
-    // Update sequence check - Stage 3 should come after Stage 2
-    u64 *last_stage = sequence_check.lookup(&eventfd_ctx);
-    if (!last_stage || *last_stage != 2) {
-        return 0;  // Invalid sequence - Stage 2 must come before Stage 3
-    }
-    
-    // Update to Stage 3
-    u64 current_stage = 3;
+
+    // Update sequence to Stage 4
+    u64 current_stage = 4;
     sequence_check.update(&eventfd_ctx, &current_stage);
-    
-    // Emit Stage 3 event - irqfd_wakeup
+
+    // Update gsi_to_queue map for Stage 5 correlation
+    // Key: GSI (which equals vector in vmx_deliver_posted_interrupt)
+    u32 gsi_key = (u32)gsi;
+    struct gsi_queue_info gsi_info = {};
+    gsi_info.eventfd_ctx = eventfd_ctx;
+    gsi_info.sock_ptr = ic_info->sock_ptr;
+    gsi_info.queue_index = ic_info->queue_index;
+    gsi_info.timestamp = timestamp;
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        gsi_info.dev_name[i] = ic_info->dev_name[i];
+    }
+    gsi_to_queue.update(&gsi_key, &gsi_info);
+
+    // Emit Stage 4 event - irqfd_wakeup
     struct interrupt_trace_event event = {};
-    event.stage = 3;  // irqfd_wakeup
+    event.stage = 4;  // irqfd_wakeup
     // Copy device name and queue info from interrupt chain
     #pragma unroll
     for (int i = 0; i < 16; i++) {
@@ -597,45 +780,146 @@ int trace_irqfd_wakeup(struct pt_regs *ctx) {
     event.eventfd_ctx = eventfd_ctx;
     event.gsi = (u32)gsi;
     event.delay_ns = delay_ns;
-    
+
     submit_interrupt_event(ctx, &event);
-    
+
     return 0;
 }
 
-// Stage 3 Alternative: kvm_set_irq - Called by irqfd_inject
+// Stage 4 Alternative: kvm_set_irq - Called by irqfd_inject
 int trace_kvm_set_irq(struct pt_regs *ctx) {
     struct kvm *kvm = (struct kvm *)PT_REGS_PARM1(ctx);
     int irq_source_id = (int)PT_REGS_PARM2(ctx);
     u32 gsi = (u32)PT_REGS_PARM3(ctx);
     int level = (int)PT_REGS_PARM4(ctx);
-    
+
     if (!kvm || gsi == 0) return 0;  // Filter out invalid calls
-    
+
     // We need to find a way to match this with our interrupt chains
     // Since kvm_set_irq is called by irqfd_inject, we'll check all active chains
     // and see if any have recent vhost_signal activity
-    
+
     u64 timestamp = bpf_ktime_get_ns();
-    
+
     // Check all active interrupt chains
     u64 eventfd_ctx = 0;
     struct interrupt_connection *ic_info = NULL;
-    
+
     // We'll emit events for any kvm_set_irq with level=1 (interrupt assertion)
     // that matches a known GSI range (typically 24-31 for MSI)
     if (level == 1 && gsi >= 24 && gsi <= 255) {
         // Try to find a matching interrupt chain by searching active chains
         // For now, emit the event and let user-space correlate
-        
+
         struct interrupt_trace_event event = {};
-        event.stage = 3;  // kvm_set_irq (alternative to irqfd_inject)
+        event.stage = 4;  // kvm_set_irq (alternative to irqfd_wakeup)
         event.gsi = gsi;
         event.delay_ns = 0;  // Cannot calculate without eventfd_ctx match
-        
+
         submit_interrupt_event(ctx, &event);
     }
-    
+
+    return 0;
+}
+
+// Stage 3: eventfd_signal - Called by vhost_signal
+// Call chain: vhost_signal -> eventfd_signal -> wake_up_locked_poll -> irqfd_wakeup
+// eventfd_signal(struct eventfd_ctx *ctx, __u64 n)
+int trace_eventfd_signal(struct pt_regs *ctx) {
+    struct eventfd_ctx *eventfd = (struct eventfd_ctx *)PT_REGS_PARM1(ctx);
+
+    if (!eventfd) return 0;
+
+    u64 eventfd_ctx = (u64)eventfd;
+
+    // Only emit event if this eventfd matches our interrupt chain
+    struct interrupt_connection *ic_info = interrupt_chains.lookup(&eventfd_ctx);
+    if (!ic_info) {
+        return 0;  // Not our target eventfd
+    }
+
+    u64 timestamp = bpf_ktime_get_ns();
+    u64 delay_ns = timestamp - ic_info->timestamp;
+
+    // Check current stage - should be 2 (from vhost_signal)
+    u64 *last_stage = sequence_check.lookup(&eventfd_ctx);
+    if (!last_stage || *last_stage != 2) {
+        return 0;  // Only emit if we have a valid Stage 2 entry
+    }
+
+    // Update sequence to Stage 3
+    u64 current_stage = 3;
+    sequence_check.update(&eventfd_ctx, &current_stage);
+
+    // Emit Stage 3 event - eventfd_signal
+    struct interrupt_trace_event event = {};
+    event.stage = 3;  // eventfd_signal
+    // Copy device name and queue info from interrupt chain
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        event.dev_name[i] = ic_info->dev_name[i];
+    }
+    event.queue_index = ic_info->queue_index;
+    event.sock_ptr = ic_info->sock_ptr;
+    event.eventfd_ctx = eventfd_ctx;
+    event.delay_ns = delay_ns;
+
+    submit_interrupt_event(ctx, &event);
+    return 0;
+}
+
+// Stage 5: vmx_deliver_posted_interrupt - IRQ bypass hardware path
+// Called when using IRQ bypass (irqbypass module) for posted interrupts
+// This is the hardware fast path for MSI-X interrupt delivery with APICv enabled
+// Correlation: vector == GSI, lookup gsi_to_queue map populated by Stage 4
+// Sequence check: only emit if Stage 4 just happened (sequence_check == 4)
+int trace_vmx_deliver_posted_interrupt(struct pt_regs *ctx) {
+    // vmx_deliver_posted_interrupt(struct kvm_vcpu *vcpu, int vector)
+    void *vcpu = (void *)PT_REGS_PARM1(ctx);
+    int vector = (int)PT_REGS_PARM2(ctx);
+
+    if (!vcpu) return 0;
+
+    // Filter for MSI interrupt vectors (typically >= 0x20)
+    if (vector < 0x20) return 0;
+
+    // Correlate with Stage 4 via vector (vector == GSI for MSI-X)
+    u32 gsi_key = (u32)vector;
+    struct gsi_queue_info *gsi_info = gsi_to_queue.lookup(&gsi_key);
+    if (!gsi_info) {
+        return 0;  // Not our target - no matching GSI from Stage 4
+    }
+
+    // Sequence check: only emit if Stage 4 just happened for this eventfd_ctx
+    u64 eventfd_ctx = gsi_info->eventfd_ctx;
+    u64 *last_stage = sequence_check.lookup(&eventfd_ctx);
+    if (!last_stage || *last_stage != 4) {
+        return 0;  // Only emit if Stage 4 was the previous stage
+    }
+
+    u64 timestamp = bpf_ktime_get_ns();
+    u64 delay_ns = timestamp - gsi_info->timestamp;
+
+    // Update sequence to Stage 5 (marks this chain as complete)
+    u64 current_stage = 5;
+    sequence_check.update(&eventfd_ctx, &current_stage);
+
+    // Emit Stage 5 event - correlated with our interrupt chain
+    struct interrupt_trace_event event = {};
+    event.stage = 5;  // Stage 5: vmx_deliver_posted_interrupt (hardware path)
+    // Copy device name and queue info from gsi_to_queue
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        event.dev_name[i] = gsi_info->dev_name[i];
+    }
+    event.queue_index = gsi_info->queue_index;
+    event.sock_ptr = gsi_info->sock_ptr;
+    event.eventfd_ctx = eventfd_ctx;
+    event.gsi = (u32)vector;  // vector == GSI
+    event.delay_ns = delay_ns;
+    event.vq_ptr = (u64)vcpu;
+
+    submit_interrupt_event(ctx, &event);
     return 0;
 }
 """
@@ -644,10 +928,13 @@ int trace_kvm_set_irq(struct pt_regs *ctx) {
 interrupt_traces = []
 chain_stats = {}
 sequence_errors = 0
+# Stage names ordered by execution sequence
 stage_names = {
     1: "tun_net_xmit",
     2: "vhost_signal",
-    3: "irqfd_wakeup"
+    3: "eventfd_signal",   # Called by vhost_signal
+    4: "irqfd_wakeup",     # Key correlation point - KVM interrupt injection
+    5: "posted_int"        # vmx_deliver_posted_interrupt (hardware path, may not correlate)
 }
 
 def process_interrupt_event(cpu, data, size):
@@ -713,21 +1000,37 @@ def process_interrupt_event(cpu, data, size):
         except:
             packet_info = " [packet info parse error]"
     
-    print("TUN TX INTERRUPT [{}] Stage {} [{}]: Time={} Sock=0x{:x} EventFD=0x{:x} GSI={} VQ=0x{:x} Delay={:.3f}ms CPU={} PID={} COMM={}{}".format(
-        queue_key,
-        event.stage,
-        stage_names.get(event.stage, 'unknown'),
-        timestamp_str,
-        event.sock_ptr,
-        event.eventfd_ctx,
-        event.gsi,
-        event.vq_ptr,
-        delay_ms,
-        event.cpu_id,
-        event.pid,
-        event.comm.decode('utf-8', 'replace'),
-        packet_info
-    ))
+    # Format output based on stage - only show relevant fields for each stage
+    stage = event.stage
+    base_info = "TUN TX INTERRUPT [{}] Stage {} [{}]: Time={}".format(
+        queue_key, stage, stage_names.get(stage, 'unknown'), timestamp_str)
+
+    if stage == 1:
+        # Stage 1: tun_net_xmit - sock from tfile->socket, queue from skb->queue_mapping
+        detail = " Queue={} Sock(tfile)=0x{:x}".format(event.queue_index, event.sock_ptr)
+    elif stage == 2:
+        # Stage 2: vhost_signal - sock from vq->private_data, eventfd from vq->call_ctx.ctx
+        detail = " Sock(vq)=0x{:x} EventFD(vq)=0x{:x} VQ=0x{:x}".format(
+            event.sock_ptr, event.eventfd_ctx, event.vq_ptr)
+    elif stage == 3:
+        # Stage 3: eventfd_signal - eventfd is function parameter
+        detail = " EventFD(arg)=0x{:x} Delay={:.3f}ms".format(
+            event.eventfd_ctx, delay_ms)
+    elif stage == 4:
+        # Stage 4: irqfd_wakeup - eventfd and gsi from irqfd structure
+        detail = " EventFD(irqfd)=0x{:x} GSI(irqfd)={} Delay={:.3f}ms".format(
+            event.eventfd_ctx, event.gsi, delay_ms)
+    elif stage == 5:
+        # Stage 5: vmx_deliver_posted_interrupt - correlated via GSI/vector from Stage 4
+        detail = " Vector(arg)={} VCPU=0x{:x} Delay={:.3f}ms".format(event.gsi, event.vq_ptr, delay_ms)
+    else:
+        detail = " Sock=0x{:x} EventFD=0x{:x} GSI={} VQ=0x{:x} Delay={:.3f}ms".format(
+            event.sock_ptr, event.eventfd_ctx, event.gsi, event.vq_ptr, delay_ms)
+
+    common_info = " CPU={} PID={} COMM={}{}".format(
+        event.cpu_id, event.pid, event.comm.decode('utf-8', 'replace'), packet_info)
+
+    print(base_info + detail + common_info)
 
 def analyze_interrupt_chains():
     """Analyze interrupt chain completeness and sequence"""
@@ -757,11 +1060,15 @@ def analyze_interrupt_chains():
             print("  Chain Completeness: {:.1f}% (min {} / max {} events)".format(
                 completeness, min_count, max_count))
             
-            # Expected chain: Stage 1 -> Stage 2 -> Stage 3
-            if 1 in stages and 2 in stages and 3 in stages:
-                print("  COMPLETE CHAIN: tun_net_xmit -> vhost_signal -> irqfd_wakeup")
+            # Expected chain: Stage 1 -> Stage 2 -> Stage 3 -> Stage 4 -> Stage 5
+            if 1 in stages and 2 in stages and 3 in stages and 4 in stages and 5 in stages:
+                print("  COMPLETE CHAIN: tun_net_xmit -> vhost_signal -> eventfd_signal -> irqfd_wakeup -> posted_int")
+            elif 1 in stages and 2 in stages and 3 in stages and 4 in stages:
+                print("  PARTIAL CHAIN: tun_net_xmit -> vhost_signal -> eventfd_signal -> irqfd_wakeup (missing posted_int)")
+            elif 1 in stages and 2 in stages and 3 in stages:
+                print("  PARTIAL CHAIN: tun_net_xmit -> vhost_signal -> eventfd_signal (missing irqfd_wakeup)")
             elif 1 in stages and 2 in stages:
-                print("  PARTIAL CHAIN: tun_net_xmit -> vhost_signal (missing irqfd_wakeup)")
+                print("  PARTIAL CHAIN: tun_net_xmit -> vhost_signal (missing eventfd_signal)")
             elif 1 in stages:
                 print("  INCOMPLETE: only tun_net_xmit detected")
             elif 2 in stages:
@@ -833,19 +1140,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Traces the complete interrupt chain for specified TUN TX queue:
-tun_net_xmit -> vhost_signal -> irqfd_wakeup
+  Stage 1: tun_net_xmit       - Packet enters TUN device (socket correlation)
+  Stage 2: vhost_signal       - vhost signals eventfd (eventfd_ctx correlation)
+  Stage 3: eventfd_signal     - eventfd entry point (called by vhost_signal)
+  Stage 4: irqfd_wakeup       - KVM interrupt injection (key correlation point)
+  Stage 5: posted_int         - Hardware posted interrupt (no correlation)
+
+Kernel call chain:
+  tun_net_xmit -> vhost_signal -> eventfd_signal -> irqfd_wakeup -> KVM
+
+Correlation mechanism:
+  - Stage 1->2: socket pointer (vq->private_data == &tfile->socket)
+  - Stage 2->3->4: eventfd_ctx pointer (vq->call_ctx.ctx == eventfd == irqfd->eventfd)
+  - Stage 4+: GSI for interrupt identification
 
 Based on proven implementation from vhost_queue_correlation_monitor.py.
-Implements ultra ultra think design with precise probe point chaining and
-execution order validation.
 
 Examples:
   # Trace specific device and queue
   sudo %(prog)s --device vnet0 --queue 0
-  
+
   # Enable detailed chain analysis with statistics
   sudo %(prog)s --device vnet0 --queue 0 --analyze-chains --stats-interval 5
-  
+
   # Generate network traffic and trace
   sudo %(prog)s --device vnet0 --queue 0 --generate-traffic
         """
@@ -872,24 +1189,55 @@ Examples:
         print("\nRun the trace tool in another terminal and then execute these commands.")
         return
     
-    # Load BPF program
+    # Detect kernel version and set appropriate structure layout
+    kernel_5x = needs_5x_vhost_layout()
+    major, minor = get_kernel_version()
+    distro = get_distro_id()
+    irqbypass_loaded = has_irqbypass_module()
+
+    print("Detected kernel version: {}.{}, distro: {}".format(major, minor, distro))
+    print("IRQ bypass module: {}".format("loaded" if irqbypass_loaded else "not loaded"))
+    print("Using {} vhost structure layout".format(
+        "5.x (with vhost_vring_call, 72 bytes)" if kernel_5x else "4.x (pointer only, 8 bytes)"))
+
+    # Load BPF program with kernel version macro
     try:
-        b = BPF(text=bpf_text)
-        
+        bpf_program = bpf_text
+        if kernel_5x:
+            bpf_program = "#define KERNEL_VERSION_5X 1\n" + bpf_program
+
+        b = BPF(text=bpf_program)
+
         # Attach proven probe points
         b.attach_kprobe(event="tun_net_xmit", fn_name="trace_tun_net_xmit")
         print("Successfully attached to tun_net_xmit")
-        
+
         b.attach_kprobe(event="vhost_add_used_and_signal_n", fn_name="trace_vhost_signal")
         print("Successfully attached to vhost_add_used_and_signal_n")
         
-        # Attach irqfd_wakeup probe (verified as the correct probe point)
+        # Stage 3: eventfd_signal - Called by vhost_signal
+        try:
+            b.attach_kprobe(event="eventfd_signal", fn_name="trace_eventfd_signal")
+            print("Successfully attached to eventfd_signal")
+        except Exception as e:
+            print("Warning: eventfd_signal not available: {}".format(e))
+
+        # Stage 4: irqfd_wakeup - KVM interrupt injection
         try:
             b.attach_kprobe(event="irqfd_wakeup", fn_name="trace_irqfd_wakeup")
-            print("Successfully attached to irqfd_wakeup (verified offsets: eventfd_ctx +32, gsi +48)")
+            print("Successfully attached to irqfd_wakeup (KVM interrupt injection)")
         except Exception as e:
-            print("Failed to attach irqfd_wakeup: {}".format(e))
-            print("   Chain will be incomplete (only tun_net_xmit -> vhost_signal)")
+            if args.debug:
+                print("Note: irqfd_wakeup not available: {}".format(e))
+
+        # Stage 5: vmx_deliver_posted_interrupt - IRQ bypass hardware path (optional)
+        # Note: This function doesn't have eventfd_ctx, so correlation may not work
+        try:
+            b.attach_kprobe(event="vmx_deliver_posted_interrupt", fn_name="trace_vmx_deliver_posted_interrupt")
+            print("Successfully attached to vmx_deliver_posted_interrupt (IRQ bypass hardware path)")
+        except Exception as e:
+            if args.debug:
+                print("Note: vmx_deliver_posted_interrupt not available: {}".format(e))
         
     except Exception as e:
         print("Failed to load BPF program: {}".format(e))
@@ -920,9 +1268,8 @@ Examples:
     print("\n" + "="*80)
     print("TUN TX QUEUE INTERRUPT TRACING STARTED")
     print("="*80)
-    print("Tracing: tun_net_xmit -> vhost_signal -> irqfd_wakeup")
-    print("Using proven filtering from vhost_queue_correlation_monitor.py")
-    print("Chain validation: Stage 3 only fires if Stage 2 created matching eventfd_ctx entry")
+    print("Tracing: tun_net_xmit -> vhost_signal -> eventfd_signal -> irqfd_wakeup -> posted_int")
+    print("Correlation: Stage 2->3->4 via eventfd_ctx, Stage 4->5 via GSI/vector")
     if args.analyze_chains:
         print("Chain analysis: ENABLED (interval: {}s)".format(args.stats_interval))
     print("Press Ctrl+C to stop\n")
@@ -932,6 +1279,7 @@ Examples:
     b["target_queues"].clear()
     b["interrupt_chains"].clear()
     b["sequence_check"].clear()
+    b["gsi_to_queue"].clear()
     print("Maps cleared. Ready for tracing.\n")
     
     # Open perf buffer for events
@@ -963,8 +1311,9 @@ Examples:
     print("\n" + "="*80)
     print("TUN TX INTERRUPT TRACING STOPPED - FINAL SUMMARY")
     print("="*80)
-    
-    print_statistics_summary()
+
+    if args.analyze_chains:
+        print_statistics_summary()
     
     # Output to JSON file if requested
     if args.output:
