@@ -1,0 +1,59 @@
+# Minimal Input Configuration Template
+# Copy this file to config/<env-name>/minimal-input.yaml and fill in your values
+#
+# This template requires minimal user input - network details are auto-discovered
+#
+# Prerequisites:
+# - SSH key-based access to all hosts/VMs
+# - For VMs: run 'virsh list --all' on the host to get VM UUIDs
+# - Ensure test IPs are reachable from your network
+
+version: "1.0"
+environment: "my-environment"  # Change this to your environment name
+
+# Node definitions
+# Only need: SSH credentials, role, and for VMs: host_ref + uuid + test_ip
+nodes:
+  # Physical host nodes
+  host-server:
+    ssh: "user@192.168.1.100"       # SSH: user@host or just host (defaults to root)
+    workdir: "/home/user/lcc"       # Remote working directory
+    role: "host"                    # 'host' for physical servers
+
+  host-client:
+    ssh: "user@192.168.1.101"
+    workdir: "/home/user/lcc"
+    role: "host"
+
+  # VM nodes (optional - only if testing VM-to-VM)
+  vm-server:
+    ssh: "root@192.168.2.100"       # SSH access to VM
+    workdir: "/root/lcc"
+    role: "vm"                      # 'vm' for virtual machines
+    host_ref: "host-server"         # Which physical host this VM runs on
+    uuid: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  # From 'virsh list --all'
+    test_ip: "192.168.2.100"        # VM's test network IP (may differ from SSH IP)
+
+  vm-client:
+    ssh: "root@192.168.2.101"
+    workdir: "/root/lcc"
+    role: "vm"
+    host_ref: "host-client"
+    uuid: "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+    test_ip: "192.168.2.101"
+
+# Test pairs: which nodes form server/client pairs
+# Remove 'vm' section if not testing VM-to-VM
+test_pairs:
+  host:
+    server: "host-server"
+    client: "host-client"
+  vm:
+    server: "vm-server"
+    client: "vm-client"
+
+# Discovery hints (optional)
+# These help the auto-discovery find the right interfaces
+discovery_hints:
+  internal_port_type: "mgt"         # OVS internal port name pattern (e.g., "mgt", "storage")
+  python_interpreter: "python3"     # Python interpreter to use on remote hosts

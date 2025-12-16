@@ -225,7 +225,8 @@ class InitHooks:
 
                     while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
                         # Prefer direct child python processes (handles python, python2, python3)
-                        FOUND_PID=$(ps -eo pid,ppid,comm,args --no-headers | awk -v target="$TOOL_PID" "(\$2 == target && \$3 ~ /^python/ && index(\$0, \\\"ebpf-tools/\\\")) {{print \$1; exit}}")
+                        # Match both measurement-tools/ and ebpf-tools/ for compatibility
+                        FOUND_PID=$(ps -eo pid,ppid,comm,args --no-headers | awk -v target="$TOOL_PID" "(\$2 == target && \$3 ~ /^python/ && (index(\$0, \\\"measurement-tools/\\\") || index(\$0, \\\"ebpf-tools/\\\"))) {{print \$1; exit}}")
                         if [ -n "$FOUND_PID" ]; then
                             echo "DEBUG: Direct child lookup located python PID $FOUND_PID" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
                         fi
@@ -234,7 +235,7 @@ class InitHooks:
                         if [ -z "$FOUND_PID" ]; then
                             PGID=$(ps -o pgid= -p $TOOL_PID 2>/dev/null | tr -d " ")
                             if [ -n "$PGID" ]; then
-                                FOUND_PID=$(ps -eo pid,pgid,comm,args --no-headers | awk -v target="$PGID" "(\$2 == target && \$3 ~ /^python/ && index(\$0, \\\"ebpf-tools/\\\")) {{print \$1; exit}}")
+                                FOUND_PID=$(ps -eo pid,pgid,comm,args --no-headers | awk -v target="$PGID" "(\$2 == target && \$3 ~ /^python/ && (index(\$0, \\\"measurement-tools/\\\") || index(\$0, \\\"ebpf-tools/\\\"))) {{print \$1; exit}}")
                                 if [ -n "$FOUND_PID" ]; then
                                     echo "DEBUG: Process-group lookup located python child PID $FOUND_PID" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
                                 fi

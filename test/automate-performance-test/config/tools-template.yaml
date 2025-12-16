@@ -1,0 +1,212 @@
+# Default Tools Registration Template
+# This file defines all eBPF tools available for testing
+# Merged with environment-specific config during bootstrap
+
+tools:
+  categories:
+    # Performance - System Network Tools (Host environment)
+    performance/system-network:
+      environment: "host"
+      directions:
+        rx:
+          SRC_IP: "{host_REMOTE_IP}"
+          DST_IP: "{host_LOCAL_IP}"
+        tx:
+          SRC_IP: "{host_LOCAL_IP}"
+          DST_IP: "{host_REMOTE_IP}"
+      tools:
+        - script: "system_network_perfomance_metrics.py"
+          template: "sudo python3 {path} --internal-interface {INTERNAL_INTERFACE} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol} --latency-us {latency_threshold}"
+          latency_threshold: 100
+          parameters:
+            protocol: ["tcp", "udp"]
+
+        - script: "system_network_latency_details.py"
+          template: "sudo python3 {path} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol} --latency-us {latency_threshold}"
+          latency_threshold: 100
+          parameters:
+            protocol: ["tcp", "udp"]
+
+        - script: "system_network_latency_summary.py"
+          template: "sudo python3 {path} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp"]
+
+        - script: "system_network_icmp_rtt.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --phy-iface1 {PHY_INTERFACE} --latency-us {latency_threshold}"
+          latency_threshold: 100
+          parameters:
+            protocol: ["icmp"]
+
+    # Performance - VM Network Tools (VM environment)
+    performance/vm-network:
+      environment: "vm"
+      directions:
+        rx:
+          SRC_IP: "{vm_REMOTE_IP}"
+          DST_IP: "{vm_LOCAL_IP}"
+        tx:
+          SRC_IP: "{vm_LOCAL_IP}"
+          DST_IP: "{vm_REMOTE_IP}"
+      tools:
+        - script: "vm_network_latency_summary.py"
+          template: "sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "vm_network_latency_details.py"
+          template: "sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol} --latency-us {latency_threshold}"
+          latency_threshold: 100
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "vm_network_performance_metrics.py"
+          template: "sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol} --latency-us {latency_threshold}"
+          latency_threshold: 100
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+    # Linux Network Stack - Packet Drop Tools (Host environment)
+    linux-network-stack/packet-drop:
+      environment: "host"
+      directions:
+        rx:
+          SRC_IP: "{host_REMOTE_IP}"
+          DST_IP: "{host_LOCAL_IP}"
+        tx:
+          SRC_IP: "{host_LOCAL_IP}"
+          DST_IP: "{host_REMOTE_IP}"
+      tools:
+        - script: "eth_drop.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --l4-protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "kernel_drop_stack_stats_summary_all.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --l4-protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "qdisc_drop_trace.py"
+          template: "sudo python3 {path}"
+
+    # Linux Network Stack - Other Tools (Host environment)
+    linux-network-stack:
+      environment: "host"
+      directions:
+        rx:
+          SRC_IP: "{host_REMOTE_IP}"
+          DST_IP: "{host_LOCAL_IP}"
+        tx:
+          SRC_IP: "{host_LOCAL_IP}"
+          DST_IP: "{host_REMOTE_IP}"
+      tools:
+        - script: "trace_conntrack.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "trace_ip_defrag.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["udp"]
+
+    # OVS Tools (VM environment - runs on physical host)
+    ovs:
+      environment: "vm"
+      directions:
+        rx:
+          SRC_IP: "{vm_REMOTE_IP}"
+          DST_IP: "{vm_LOCAL_IP}"
+        tx:
+          SRC_IP: "{vm_LOCAL_IP}"
+          DST_IP: "{vm_REMOTE_IP}"
+      tools:
+        - script: "ovs_upcall_latency_summary.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "ovs_userspace_megaflow.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "ovs-kernel-module-drop-monitor.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+    # KVM - vhost-net Tools
+    kvm-virt-network/vhost-net:
+      environment: "vm"
+      tools:
+        - script: "vhost_eventfd_count.py"
+          template: "sudo python3 {path}"
+
+        - script: "vhost_queue_correlation_simple.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+          parameters:
+            queue: [0, 1, 2, 3]
+
+        - script: "vhost_queue_correlation_simple.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE}"
+
+        - script: "vhost_queue_correlation_details.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue} --verbose"
+          parameters:
+            queue: [0, 1, 2, 3]
+
+        - script: "vhost_queue_correlation_details.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --verbose"
+
+        - script: "vhost_buf_peek_stats.py"
+          template: "sudo python3 {path}"
+
+    # KVM - TUN Tools
+    kvm-virt-network/tun:
+      environment: "vm"
+      tools:
+        - script: "tun_ring_monitor.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --protocol {protocol} --all"
+          parameters:
+            protocol: ["tcp", "udp", "icmp"]
+
+        - script: "tun_to_vhost_queue_status_simple_summary.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+          parameters:
+            queue: [0, 1, 2, 3]
+
+        - script: "tun_to_vhost_queue_status_simple_summary.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE}"
+
+        - script: "tun_to_vhost_queue_stats_full_summary.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+          parameters:
+            queue: [0, 1, 2, 3]
+
+        - script: "tun_to_vhost_queue_stats_full_summary.py"
+          template: "sudo python3 {path} --device {VM_INTERFACE}"
+
+    # KVM - virtio-net Tools
+    kvm-virt-network/virtio-net:
+      environment: "vm"
+      tools:
+        - script: "virtnet_poll_monitor.py"
+          template: "sudo python3 {path}"
+
+        - script: "virtnet_irq_monitor.py"
+          template: "sudo python3 {path}"
+
+    # KVM - IRQ Tools (uses dynamic vhost_pids)
+    kvm-virt-network/kvm:
+      environment: "vm"
+      tools:
+        - script: "kvm_irqfd_stats_summary.py"
+          template: "sudo python3 {path} {QEMU_PID} --interval 5 --vhost-pid {vhost_pid} --category data --subcategory {subcategory}"
+          parameters:
+            vhost_pid: "{vhost_pids}"
+            subcategory: ["rx", "tx"]
+
+        - script: "kvm_irqfd_stats_summary.py"
+          template: "sudo python3 {path} {QEMU_PID} --interval 5 --category control"

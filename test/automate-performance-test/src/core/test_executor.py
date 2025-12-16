@@ -601,16 +601,13 @@ class TestExecutor:
                 single_spec = throughput_spec.get('single_stream', {})
                 duration = single_spec.get('duration', 30)
                 # Read target_bw if configured, otherwise None (unlimited)
-                target_bw_list = single_spec.get('target_bw', None)
-                target_bw = target_bw_list[0] if target_bw_list else None
+                target_bw = self._get_config_value(single_spec.get('target_bw'), None)
             elif config == "multi_stream":
                 multi_spec = throughput_spec.get('multi_stream', {})
                 duration = multi_spec.get('duration', 30)
-                streams_list = multi_spec.get('streams', [2])
-                streams = streams_list[0] if streams_list else 2
+                streams = self._get_config_value(multi_spec.get('streams'), 2)
                 # Read target_bw if configured, otherwise None (unlimited)
-                target_bw_list = multi_spec.get('target_bw', None)
-                target_bw = target_bw_list[0] if target_bw_list else None
+                target_bw = self._get_config_value(multi_spec.get('target_bw'), None)
 
         elif test_type == "latency":
             latency_spec = perf_specs.get('latency', {})
@@ -621,17 +618,12 @@ class TestExecutor:
             if config == "single_stream":
                 single_spec = pps_spec.get('single_stream', {})
                 duration = single_spec.get('duration', 5)
-                target_bw_list = single_spec.get('target_bw', ['1G'])
-                target_bw = target_bw_list[0] if target_bw_list else '1G'
+                target_bw = self._get_config_value(single_spec.get('target_bw'), '1G')
             elif config == "multi_stream":
                 multi_spec = pps_spec.get('multi_stream', {})
                 duration = multi_spec.get('duration', 5)
-                # Read streams from global_config
-                streams_list = multi_spec.get('streams', [2])
-                streams = streams_list[0] if streams_list else 2
-                # Read target_bw for multi_stream, default to 1G per stream
-                target_bw_list = multi_spec.get('target_bw', ['1G'])
-                target_bw = target_bw_list[0] if target_bw_list else '1G'
+                streams = self._get_config_value(multi_spec.get('streams'), 2)
+                target_bw = self._get_config_value(multi_spec.get('target_bw'), '1G')
 
         # NOW determine result path after we have streams - organized by test_type then config
         conn_type = self._get_connection_type(config, streams)
@@ -911,6 +903,26 @@ class TestExecutor:
         result['success'] = True
 
         return result
+
+    def _get_config_value(self, raw_value, default=None):
+        """Extract config value from either scalar or list format.
+
+        Handles both formats for backward compatibility:
+        - Scalar: target_bw: "1G" -> returns "1G"
+        - List: target_bw: ["1G", "5G"] -> returns "1G" (first element)
+
+        Args:
+            raw_value: Value from config (can be scalar, list, or None)
+            default: Default value if raw_value is None or empty
+
+        Returns:
+            Extracted value or default
+        """
+        if raw_value is None:
+            return default
+        if isinstance(raw_value, list):
+            return raw_value[0] if raw_value else default
+        return raw_value
 
     def _get_connection_type(self, config: str, streams: Optional[int] = None) -> str:
         """Get connection type from config string and streams count
