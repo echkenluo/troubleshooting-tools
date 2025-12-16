@@ -21,12 +21,12 @@ nodes:
   # VM nodes
   # Note: test_ip same as SSH IP in this case (management network used for testing)
   vm-server:
-    ssh: "smartx@192.168.74.221"
+    ssh: "smartx@192.168.78.184"
     workdir: "/home/smartx/lcc"
     role: "vm"
     host_ref: "host-server"
     uuid: "ae6aa164-604c-4cb0-84b8-2dea034307f1"
-    test_ip: "192.168.74.221"
+    test_ip: "192.168.78.184"
 
   vm-client:
     ssh: "lcc@192.168.79.232"
