@@ -144,15 +144,83 @@ nodes:
 
 ### 2. Test Case Generation
 
-Parameter matrix expansion generates all test case combinations automatically.
+Test cases are generated from the **tools template**, which defines all available eBPF tools, command templates, and parameter matrices.
+
+#### Tools Template Loading
+
+```
+ConfigBootstrap.__init__()
+         │
+         ├─ tools_template_path specified?
+         │   ├─ Yes → Use specified path
+         │   └─ No  → Use default: config/tools-template.yaml
+         │
+         ▼
+_load_tools_template()
+         │
+         ├─ File exists?
+         │   ├─ Yes → yaml.safe_load() and return
+         │   └─ No  → Warning + return empty {}
+         │
+         ▼
+self.tools_template = {...}
+```
+
+**Default Template Locations:**
+```
+config/
+├── tools-template.yaml            ← Default tools registry (REQUIRED for case generation)
+├── performance-test-template.yaml ← Default performance test specs
+└── minimal-input-template.yaml    ← Minimal input template
+```
+
+**Template Priority:**
+1. Explicitly specified via `ConfigBootstrap(tools_template_path='/custom/path.yaml')`
+2. Default path: `config/tools-template.yaml`
+3. If not found: Empty `{}` → **No test cases generated**
+
+> **Important:** The `tools-template.yaml` is **required** for test case generation. Without it, `generate_test_cases()` returns an empty list.
+
+#### Tools Template Structure
+
+```yaml
+tools:
+  categories:
+    performance/system-network:        # Category name (becomes path prefix)
+      environment: "host"              # Target environment: host or vm
+      directions:                      # Direction-specific variable mappings
+        rx:
+          SRC_IP: "{host_REMOTE_IP}"   # Reference to environment variables
+          DST_IP: "{host_LOCAL_IP}"
+        tx:
+          SRC_IP: "{host_LOCAL_IP}"
+          DST_IP: "{host_REMOTE_IP}"
+      tools:                           # List of tools in this category
+        - script: "system_network_latency_summary.py"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol}"
+          parameters:                  # Parameter matrix to expand
+            protocol: ["tcp", "udp"]   # Will generate 2 × 2 = 4 cases
+```
+
+#### Parameter Matrix Expansion
+
+Uses `itertools.product` to generate all combinations:
 
 **Input:**
 ```yaml
-tools:
-  - script: "system_network_latency_summary.py"
-    parameters:
-      protocol: ["tcp", "udp"]
+parameters:
+  protocol: ["tcp", "udp"]
 directions: [rx, tx]
+```
+
+**Expansion Process:**
+```python
+expandable = {
+    "protocol": ["tcp", "udp"],
+    "direction": ["rx", "tx"]
+}
+combinations = list(itertools.product(*expandable.values()))
+# Result: 4 combinations
 ```
 
 **Output:** 4 test cases (2 protocols × 2 directions)
@@ -163,6 +231,39 @@ directions: [rx, tx]
   {"id": 3, "name": "tx_protocol_tcp", "command": "... --direction tx --protocol tcp"},
   {"id": 4, "name": "tx_protocol_udp", "command": "... --direction tx --protocol udp"}
 ]
+```
+
+#### Variable Resolution Order
+
+Variables are resolved in the following order (later overrides earlier):
+
+```python
+all_vars = {'path': f"{remote_base}/{category}/{script}"}  # 1. Script path
+all_vars.update(env_vars)      # 2. Environment variables (host_LOCAL_IP, etc.)
+all_vars.update(defaults)      # 3. Tool defaults (latency_threshold, etc.)
+all_vars.update(dir_vars)      # 4. Direction-specific variables (SRC_IP, DST_IP)
+all_vars.update(params)        # 5. Current parameter combination
+```
+
+#### Custom Tools Template
+
+To use a custom tools template:
+
+```python
+from src.config import ConfigBootstrap
+
+bootstrap = ConfigBootstrap(
+    'config/my-env/minimal-input.yaml',
+    tools_template_path='config/my-custom-tools.yaml'  # Custom template
+)
+```
+
+Or via command line:
+```bash
+python3 scripts/run_automation.py \
+  --bootstrap \
+  --minimal-input config/my-env/minimal-input.yaml \
+  --tools-template config/my-custom-tools.yaml
 ```
 
 ### 3. Workflow Generation
