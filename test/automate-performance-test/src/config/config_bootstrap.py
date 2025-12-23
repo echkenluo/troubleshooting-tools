@@ -597,11 +597,27 @@ class ConfigBootstrap:
 
         prefix = env_name  # 'host' or 'vm'
 
+        # Get physical interface and bond members
+        phy_interface = network.get('server_physical_interface', '')
+        phy_members = network.get('server_physical_nic_members', [])
+
+        # For tools that need to monitor on bond members (e.g., icmp_rtt)
+        # PHY_INTERFACE_MEMBER1: first bond member or physical interface
+        # PHY_INTERFACE_MEMBER2: second bond member or empty (auto-removed if unset)
+        if phy_members and len(phy_members) >= 1:
+            phy_member1 = phy_members[0]
+            phy_member2 = phy_members[1] if len(phy_members) >= 2 else ''
+        else:
+            phy_member1 = phy_interface
+            phy_member2 = ''
+
         variables = {
             f'{prefix}_LOCAL_IP': server.get('test_ip', ''),
             f'{prefix}_REMOTE_IP': client.get('test_ip', ''),
             'INTERNAL_INTERFACE': network.get('internal_interface', ''),
-            'PHY_INTERFACE': network.get('server_physical_interface', ''),
+            'PHY_INTERFACE': phy_interface,
+            'PHY_INTERFACE_MEMBER1': phy_member1,
+            'PHY_INTERFACE_MEMBER2': phy_member2,
             'VM_INTERFACE': network.get('server_vm_interface', network.get('vm_interface', '')),
             'QEMU_PID': kvm_server.get('qemu_pid', ''),
         }
@@ -643,12 +659,15 @@ class ConfigBootstrap:
         for var_name, var_value in variables.items():
             resolved = resolved.replace(f'{{{var_name}}}', str(var_value))
 
-        # Remove unresolved optional parameters
+        # Remove unresolved optional parameters (still have {var} placeholder)
         option_pattern = r'--(\w+[-\w]*)\s+\{(\w+)\}'
         matches = re.findall(option_pattern, resolved)
         for option_name, var_name in matches:
             full_pattern = r'--' + re.escape(option_name) + r'\s+\{' + var_name + r'\}'
             resolved = re.sub(full_pattern, '', resolved)
+
+        # Remove options with empty values (e.g., "--phy-iface2 " with no value)
+        resolved = re.sub(r'--[\w-]+\s+(?=--|$)', '', resolved)
 
         # Clean up extra spaces
         resolved = re.sub(r'\s+', ' ', resolved).strip()
