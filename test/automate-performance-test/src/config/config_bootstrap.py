@@ -62,7 +62,8 @@ class NodeInfo:
     # Auto-discovered fields
     test_ip: str = ""  # Final test IP (user-provided for VM, auto for host)
     internal_interface: str = ""  # Host: OVS internal port
-    physical_interface: str = ""  # Physical NIC name
+    physical_interface: str = ""  # Physical NIC name (bond or single NIC)
+    physical_nic_members: List[str] = field(default_factory=list)  # Bond member ports
     vm_interface: str = ""  # vnet on host side
     vm_nic_name: str = ""  # NIC name inside VM (e.g., ens4, eth1)
     vm_nic_mac: str = ""  # MAC address of VM NIC
@@ -186,9 +187,12 @@ class ConfigBootstrap:
             node.test_ip = sys_info.ip_address
             node.internal_interface = sys_info.port_name
 
-            # Get physical NIC name
+            # Get physical NIC name and bond members
             if sys_info.physical_nics:
-                node.physical_interface = sys_info.physical_nics[0].name
+                phy_nic = sys_info.physical_nics[0]
+                node.physical_interface = phy_nic.name
+                if phy_nic.is_bond and phy_nic.bond_members:
+                    node.physical_nic_members = phy_nic.bond_members
         else:
             # Fallback: use SSH host IP as test IP
             node.test_ip = node.ssh_host
@@ -285,7 +289,7 @@ class ConfigBootstrap:
                 node.vhost_pids = [str(v.pid) for v in vhost_infos]
                 logger.info(f"VM {node_name}: vnet={node.vm_interface} -> vhost_pids={node.vhost_pids}")
 
-            # Step 5: Get physical interface
+            # Step 5: Get physical interface and bond members
             if node.vm_interface:
                 bridge = host_collector.get_vnet_bridge(node.vm_interface)
                 if bridge:
@@ -293,7 +297,10 @@ class ConfigBootstrap:
                     target_bridge = uplink or bridge
                     phys = host_collector.get_physical_nics_on_bridge(target_bridge)
                     if phys:
-                        node.physical_interface = phys[0].name
+                        phy_nic = phys[0]
+                        node.physical_interface = phy_nic.name
+                        if phy_nic.is_bond and phy_nic.bond_members:
+                            node.physical_nic_members = phy_nic.bond_members
 
         # Detect Python in VM
         node.python_interpreter = self._detect_python(vm_executor)
@@ -377,7 +384,10 @@ class ConfigBootstrap:
                             'server_ip': server.test_ip,
                             'client_ip': client.test_ip,
                             'internal_interface': server.internal_interface,
-                            'physical_interface': server.physical_interface
+                            'server_physical_interface': server.physical_interface,
+                            'server_physical_nic_members': list(server.physical_nic_members),
+                            'client_physical_interface': client.physical_interface,
+                            'client_physical_nic_members': list(client.physical_nic_members)
                         }
                     }
 
@@ -411,8 +421,12 @@ class ConfigBootstrap:
                         'network_config': {
                             'server_ip': server.test_ip,
                             'client_ip': client.test_ip,
-                            'physical_interface': server.physical_interface,
-                            'vm_interface': server.vm_interface
+                            'server_physical_interface': server.physical_interface,
+                            'server_physical_nic_members': list(server.physical_nic_members),
+                            'server_vm_interface': server.vm_interface,
+                            'client_physical_interface': client.physical_interface,
+                            'client_physical_nic_members': list(client.physical_nic_members),
+                            'client_vm_interface': client.vm_interface
                         }
                     }
 
@@ -587,8 +601,8 @@ class ConfigBootstrap:
             f'{prefix}_LOCAL_IP': server.get('test_ip', ''),
             f'{prefix}_REMOTE_IP': client.get('test_ip', ''),
             'INTERNAL_INTERFACE': network.get('internal_interface', ''),
-            'PHY_INTERFACE': network.get('physical_interface', ''),
-            'VM_INTERFACE': network.get('vm_interface', ''),
+            'PHY_INTERFACE': network.get('server_physical_interface', ''),
+            'VM_INTERFACE': network.get('server_vm_interface', network.get('vm_interface', '')),
             'QEMU_PID': kvm_server.get('qemu_pid', ''),
         }
 

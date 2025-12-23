@@ -1,88 +1,96 @@
 version: '1.0'
-environment: os630-kernel-510-el7-physical
+environment: os630-kernel-510-hygon-physical
 ssh:
   ssh_hosts:
     host-server:
-      host: 172.21.128.40
+      host: 172.20.133.37
       user: smartx
       workdir: /home/smartx/lcc
     host-client:
-      host: 172.21.128.42
+      host: 172.20.133.38
       user: smartx
       workdir: /home/smartx/lcc
     vm-server:
-      host: 172.21.153.32
+      host: 172.20.225.105
       user: smartx
       workdir: /home/smartx/lcc
     vm-client:
-      host: 172.21.153.102
+      host: 172.20.225.106
       user: smartx
       workdir: /home/smartx/lcc
 environments:
   host:
-    description: Host-to-host testing on os630-kernel-510-el7-physical
+    description: Host-to-host testing on os630-kernel-510-hygon-physical
     server:
       ssh_ref: host-server
-      test_ip: 121.2.2.5
-      interface: port-access
+      test_ip: 10.220.133.37
+      interface: port-storage
     client:
       ssh_ref: host-client
-      test_ip: 121.2.2.7
-      interface: port-access
+      test_ip: 10.220.133.38
+      interface: port-storage
     network_config:
-      server_ip: 121.2.2.5
-      client_ip: 121.2.2.7
-      internal_interface: port-access
-      server_physical_interface: p2p1
-      server_physical_nic_members: []
-      client_physical_interface: p2p1
-      client_physical_nic_members: []
+      server_ip: 10.220.133.37
+      client_ip: 10.220.133.38
+      internal_interface: port-storage
+      server_physical_interface: bond2
+      server_physical_nic_members:
+      - ens19f0np0
+      - ens19f1np1
+      client_physical_interface: bond2
+      client_physical_nic_members:
+      - ens43f0np0
+      - ens43f1np1
   vm:
-    description: VM-to-VM testing on os630-kernel-510-el7-physical
+    description: VM-to-VM testing on os630-kernel-510-hygon-physical
     server:
       ssh_ref: vm-server
-      test_ip: 10.20.30.11
-      interface: ens10
-      vm_interface: vnet503
+      test_ip: 30.20.30.11
+      interface: ens11
+      vm_interface: vnet204
       physical_host_ref: host-server
     client:
       ssh_ref: vm-client
-      test_ip: 10.20.30.12
-      interface: ens10
-      vm_interface: vnet736
+      test_ip: 30.20.30.12
+      interface: ens11
+      vm_interface: vnet134
       physical_host_ref: host-client
     network_config:
-      server_ip: 10.20.30.11
-      client_ip: 10.20.30.12
-      server_physical_interface: p2p1
-      server_physical_nic_members: []
-      server_vm_interface: vnet503
-      client_physical_interface: p2p1
-      client_physical_nic_members: []
-      client_vm_interface: vnet736
+      server_ip: 30.20.30.11
+      client_ip: 30.20.30.12
+      server_physical_interface: bond2
+      server_physical_nic_members:
+      - ens19f0np0
+      - ens19f1np1
+      server_vm_interface: vnet204
+      client_physical_interface: bond2
+      client_physical_nic_members:
+      - ens43f0np0
+      - ens43f1np1
+      client_vm_interface: vnet134
     kvm_config:
       server:
-        qemu_pid: '82430'
+        qemu_pid: '4085771'
         vhost_pids:
-        - '91811'
-        - '91812'
-        - '91813'
-        - '91815'
-        - '91836'
-        - '91837'
-        - '91838'
-        - '91839'
+        - '4089207'
+        - '4089208'
+        - '4089209'
+        - '4089210'
+        - '4089211'
+        - '4089212'
+        - '4089213'
+        - '4089214'
       client:
-        qemu_pid: '65510'
+        qemu_pid: '1639656'
         vhost_pids:
-        - '70098'
-        - '70099'
-        - '70100'
-        - '70101'
-        - '70102'
-        - '70103'
-        - '70104'
-        - '70105'
+        - '1642051'
+        - '1642052'
+        - '1642053'
+        - '1642054'
+        - '1642055'
+        - '1642056'
+        - '1642057'
+        - '1642058'
 paths:
   tools_dir: measurement-tools
   results_dir: ebpf-test-results
@@ -307,14 +315,14 @@ tools:
           --category data --subcategory {subcategory}
         parameters:
           vhost_pid:
-          - '91811'
-          - '91812'
-          - '91813'
-          - '91815'
-          - '91836'
-          - '91837'
-          - '91838'
-          - '91839'
+          - '4089207'
+          - '4089208'
+          - '4089209'
+          - '4089210'
+          - '4089211'
+          - '4089212'
+          - '4089213'
+          - '4089214'
           subcategory:
           - rx
           - tx
