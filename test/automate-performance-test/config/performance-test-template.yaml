@@ -7,7 +7,6 @@ performance_tests:
   throughput:
     single_stream:
       duration: 3
-      target_bw: "1G"
     multi_stream:
       duration: 3
       streams: 4
@@ -18,9 +17,12 @@ performance_tests:
     tcp_rr: {}
     udp_rr: {}
 
-  # Packets-per-second tests
+  # Packets-per-second tests (small packets 64 bytes)
   pps:
-    duration: 3
-    single_stream: {}
+    single_stream:
+      duration: 3
+      target_bw: "1G"
     multi_stream:
+      duration: 3
       streams: 4
+      target_bw: "1G"

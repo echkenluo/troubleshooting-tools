@@ -28,13 +28,13 @@ tools:
             protocol: ["tcp", "udp"]
 
         - script: "system_network_latency_summary.py"
-          template: "sudo python3 {path} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol}"
+          template: "sudo python3 {path} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --protocol {protocol} --interval 1"
           parameters:
             protocol: ["tcp", "udp"]
 
         - script: "system_network_icmp_rtt.py"
-          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --phy-iface1 {PHY_INTERFACE} --latency-us {latency_threshold}"
-          latency_threshold: 100
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --phy-iface1 {PHY_INTERFACE} --latency-ms {latency_threshold_ms}"
+          latency_threshold_ms: 1
           parameters:
             protocol: ["icmp"]
 
@@ -50,7 +50,7 @@ tools:
           DST_IP: "{vm_REMOTE_IP}"
       tools:
         - script: "vm_network_latency_summary.py"
-          template: "sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          template: "sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol} --interval 1"
           parameters:
             protocol: ["tcp", "udp", "icmp"]
 
@@ -83,12 +83,12 @@ tools:
             protocol: ["tcp", "udp", "icmp"]
 
         - script: "kernel_drop_stack_stats_summary_all.py"
-          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --l4-protocol {protocol}"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --l4-protocol {protocol} --interval 1"
           parameters:
             protocol: ["tcp", "udp", "icmp"]
 
         - script: "qdisc_drop_trace.py"
-          template: "sudo python3 {path}"
+          template: "sudo python3 {path} --interval 1 --summary"
 
     # Linux Network Stack - Other Tools (Host environment)
     linux-network-stack:
@@ -123,7 +123,7 @@ tools:
           DST_IP: "{vm_REMOTE_IP}"
       tools:
         - script: "ovs_upcall_latency_summary.py"
-          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol}"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol {protocol} --interval 1"
           parameters:
             protocol: ["tcp", "udp", "icmp"]
 
@@ -142,26 +142,28 @@ tools:
       environment: "vm"
       tools:
         - script: "vhost_eventfd_count.py"
-          template: "sudo python3 {path}"
+          template: "sudo python3 {path} --interval 1"
 
-        - script: "vhost_queue_correlation_simple.py"
-          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
-          parameters:
-            queue: [0, 1, 2, 3]
+        # Commented out: too many cases with queue expansion
+        # - script: "vhost_queue_correlation_simple.py"
+        #   template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+        #   parameters:
+        #     queue: [0, 1, 2, 3]
 
         - script: "vhost_queue_correlation_simple.py"
           template: "sudo python3 {path} --device {VM_INTERFACE}"
 
-        - script: "vhost_queue_correlation_details.py"
-          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue} --verbose"
-          parameters:
-            queue: [0, 1, 2, 3]
+        # Commented out: too many cases with queue expansion
+        # - script: "vhost_queue_correlation_details.py"
+        #   template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue} --verbose"
+        #   parameters:
+        #     queue: [0, 1, 2, 3]
 
         - script: "vhost_queue_correlation_details.py"
           template: "sudo python3 {path} --device {VM_INTERFACE} --verbose"
 
         - script: "vhost_buf_peek_stats.py"
-          template: "sudo python3 {path}"
+          template: "sudo python3 {path} --interval 1"
 
     # KVM - TUN Tools
     kvm-virt-network/tun:
@@ -172,41 +174,33 @@ tools:
           parameters:
             protocol: ["tcp", "udp", "icmp"]
 
-        - script: "tun_to_vhost_queue_status_simple_summary.py"
-          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
-          parameters:
-            queue: [0, 1, 2, 3]
+        # Commented out: too many cases with queue expansion
+        # - script: "tun_to_vhost_queue_status_simple_summary.py"
+        #   template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+        #   parameters:
+        #     queue: [0, 1, 2, 3]
 
         - script: "tun_to_vhost_queue_status_simple_summary.py"
           template: "sudo python3 {path} --device {VM_INTERFACE}"
 
-        - script: "tun_to_vhost_queue_stats_full_summary.py"
-          template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
-          parameters:
-            queue: [0, 1, 2, 3]
+        # Commented out: too many cases with queue expansion
+        # - script: "tun_to_vhost_queue_stats_full_summary.py"
+        #   template: "sudo python3 {path} --device {VM_INTERFACE} --queue {queue}"
+        #   parameters:
+        #     queue: [0, 1, 2, 3]
 
         - script: "tun_to_vhost_queue_stats_full_summary.py"
           template: "sudo python3 {path} --device {VM_INTERFACE}"
-
-    # KVM - virtio-net Tools
-    kvm-virt-network/virtio-net:
-      environment: "vm"
-      tools:
-        - script: "virtnet_poll_monitor.py"
-          template: "sudo python3 {path}"
-
-        - script: "virtnet_irq_monitor.py"
-          template: "sudo python3 {path}"
 
     # KVM - IRQ Tools (uses dynamic vhost_pids)
     kvm-virt-network/kvm:
       environment: "vm"
       tools:
         - script: "kvm_irqfd_stats_summary.py"
-          template: "sudo python3 {path} {QEMU_PID} --interval 5 --vhost-pid {vhost_pid} --category data --subcategory {subcategory}"
+          template: "sudo python3 {path} {QEMU_PID} --interval 1 --vhost-pid {vhost_pid} --category data --subcategory {subcategory}"
           parameters:
             vhost_pid: "{vhost_pids}"
             subcategory: ["rx", "tx"]
 
         - script: "kvm_irqfd_stats_summary.py"
-          template: "sudo python3 {path} {QEMU_PID} --interval 5 --category control"
+          template: "sudo python3 {path} {QEMU_PID} --interval 1 --category control"

@@ -23,7 +23,7 @@ python3 scripts/run_automation.py \
   --minimal-input config/my-env/minimal-input.yaml \
   --output-dir config/my-env
 
-# Step 2: 执行测试
+# Step 2: 执行测试（单次）
 python3 scripts/run_automation.py --config-dir config/my-env
 
 # Step 3: 获取结果
@@ -37,6 +37,32 @@ python3 analysis/analyze_performance.py \
   --iteration-path ./results \
   --output-dir ./output
 ```
+
+### 多轮迭代测试
+
+使用 `scheduled_automation.py` 执行多轮测试并自动收集结果：
+
+```bash
+# 执行 3 轮迭代测试
+python3 scripts/scheduled_automation.py \
+  --config-dir config/my-env \
+  --iterations 3 \
+  --results-dir ./results
+
+# 分析多轮结果
+python3 analysis/analyze_performance.py \
+  --iteration-path ./results \
+  --output-dir ./output
+```
+
+**参数说明：**
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--config-dir` | 配置目录（包含 full.yaml 和 cases.json） | 必填 |
+| `--iterations` | 迭代次数 | 1 |
+| `--delay` | 开始前延迟秒数 | 0 |
+| `--results-dir` | 本地结果存储目录 | ./results |
+| `--no-cleanup` | 跳过远程清理 | false |
 
 ## Architecture
 

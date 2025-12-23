@@ -416,12 +416,20 @@ class ConfigBootstrap:
                         }
                     }
 
-                    # KVM config
+                    # KVM config for both server and client VMs
+                    kvm_config = {}
                     if server.qemu_pid > 0:
-                        environments['vm']['kvm_config'] = {
+                        kvm_config['server'] = {
                             'qemu_pid': str(server.qemu_pid),
                             'vhost_pids': list(server.vhost_pids)
                         }
+                    if client.qemu_pid > 0:
+                        kvm_config['client'] = {
+                            'qemu_pid': str(client.qemu_pid),
+                            'vhost_pids': list(client.vhost_pids)
+                        }
+                    if kvm_config:
+                        environments['vm']['kvm_config'] = kvm_config
 
         # Get tools from template with dynamic parameters
         tools_config = self._prepare_tools_config()
@@ -570,6 +578,8 @@ class ConfigBootstrap:
         client = env_config.get('client', {})
         network = env_config.get('network_config', {})
         kvm = env_config.get('kvm_config', {})
+        # Support both old flat structure and new nested structure
+        kvm_server = kvm.get('server', kvm) if isinstance(kvm.get('server'), dict) else kvm
 
         prefix = env_name  # 'host' or 'vm'
 
@@ -579,7 +589,7 @@ class ConfigBootstrap:
             'INTERNAL_INTERFACE': network.get('internal_interface', ''),
             'PHY_INTERFACE': network.get('physical_interface', ''),
             'VM_INTERFACE': network.get('vm_interface', ''),
-            'QEMU_PID': kvm.get('qemu_pid', ''),
+            'QEMU_PID': kvm_server.get('qemu_pid', ''),
         }
 
         return variables
