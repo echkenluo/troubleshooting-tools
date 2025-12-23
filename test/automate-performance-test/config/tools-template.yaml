@@ -33,7 +33,7 @@ tools:
             protocol: ["tcp", "udp"]
 
         - script: "system_network_icmp_rtt.py"
-          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --phy-iface1 {PHY_INTERFACE_MEMBER1} --phy-iface2 {PHY_INTERFACE_MEMBER2} --latency-ms {latency_threshold_ms}"
+          template: "sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction {direction} --phy-interface {PHY_INTERFACE} --latency-ms {latency_threshold_ms}"
           latency_threshold_ms: 1
           parameters:
             protocol: ["icmp"]

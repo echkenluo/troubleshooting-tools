@@ -71,7 +71,8 @@ bpf_text = """
 #define DST_PORT_FILTER %d
 #define PROTOCOL_FILTER %d  // 0=all, 6=TCP, 17=UDP, 1=ICMP
 #define VM_IFINDEX %d
-#define PHY_IFINDEX %d
+#define PHY_IFINDEX1 %d
+#define PHY_IFINDEX2 %d
 #define DIRECTION_FILTER %d  // 1=vnet_rx, 2=vnet_tx
 #define LATENCY_THRESHOLD_NS %d  // Minimum latency threshold in nanoseconds
 
@@ -236,20 +237,20 @@ static __always_inline bool is_target_vm_interface(const struct sk_buff *skb) {
 }
 
 static __always_inline bool is_target_phy_interface(const struct sk_buff *skb) {
-    if (PHY_IFINDEX == 0) return false;
-    
+    if (PHY_IFINDEX1 == 0) return false;
+
     struct net_device *dev = NULL;
     int ifindex = 0;
-    
+
     if (bpf_probe_read_kernel(&dev, sizeof(dev), &skb->dev) < 0 || dev == NULL) {
         return false;
     }
-    
+
     if (bpf_probe_read_kernel(&ifindex, sizeof(ifindex), &dev->ifindex) < 0) {
         return false;
     }
-    
-    return (ifindex == PHY_IFINDEX);
+
+    return (ifindex == PHY_IFINDEX1 || ifindex == PHY_IFINDEX2);
 }
 
 // Packet parsing functions - reusing vm_network_latency.py logic
@@ -1232,7 +1233,7 @@ Examples:
     parser.add_argument('--vm-interface', type=str, required=True,
                         help='VM virtual interface to monitor (e.g., vnet37)')
     parser.add_argument('--phy-interface', type=str, required=True,
-                        help='Physical interface to monitor (e.g., enp94s0f0np0)')
+                        help='Physical interface(s) to monitor. Supports comma-separated list for bond members (e.g., enp94s0f0np0 or eth0,eth1)')
     parser.add_argument('--vm-ip', type=str, required=False,
                         help='VM IP address filter')
     parser.add_argument('--src-ip', type=str, required=False,
@@ -1276,13 +1277,16 @@ Examples:
     # Convert latency threshold from microseconds to nanoseconds
     latency_threshold_ns = int(args.latency_us * 1000)
 
+    # Support multiple interfaces (split by comma)
+    phy_interfaces = args.phy_interface.split(',')
     try:
         vm_ifindex = get_if_index(args.vm_interface)
-        phy_ifindex = get_if_index(args.phy_interface)
+        phy_ifindex1 = get_if_index(phy_interfaces[0].strip())
+        phy_ifindex2 = get_if_index(phy_interfaces[1].strip()) if len(phy_interfaces) > 1 else phy_ifindex1
     except OSError as e:
         print("Error getting interface index: %s" % e)
         sys.exit(1)
-    
+
     print("=== VM Network Performance Tracer ===")
     print("Protocol filter: %s" % args.protocol.upper())
     print("Direction filter: %s (tx=VM_TX, rx=VM_RX)" % args.direction.upper())
@@ -1298,7 +1302,7 @@ Examples:
     if dst_port:
         print("Destination port filter: %d" % dst_port)
     print("VM interface: %s (ifindex %d)" % (args.vm_interface, vm_ifindex))
-    print("Physical interface: %s (ifindex %d)" % (args.phy_interface, phy_ifindex))
+    print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, phy_ifindex1, phy_ifindex2))
     print("Conntrack measurement: %s" % ("ENABLED" if args.enable_ct else "DISABLED"))
     if latency_threshold_ns > 0:
         print("Latency threshold: >= %.3f us (only reporting flows exceeding this latency)" % args.latency_us)
@@ -1307,20 +1311,20 @@ Examples:
     print("\nDebug: BPF parameters:")
     print("  src_ip_hex=0x%x, dst_ip_hex=0x%x" % (src_ip_hex, dst_ip_hex))
     print("  src_port=%d, dst_port=%d" % (src_port, dst_port))
-    print("  protocol_filter=%d, vm_ifindex=%d, phy_ifindex=%d, direction_filter=%d" % 
-          (protocol_filter, vm_ifindex, phy_ifindex, direction_filter))
-    
+    print("  protocol_filter=%d, vm_ifindex=%d, phy_ifindex1=%d, phy_ifindex2=%d, direction_filter=%d" %
+          (protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2, direction_filter))
+
     try:
         b = BPF(text=bpf_text % (
             src_ip_hex, dst_ip_hex, src_port, dst_port,
-            protocol_filter, vm_ifindex, phy_ifindex, direction_filter,
+            protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2, direction_filter,
             latency_threshold_ns
         ))
         print("BPF program loaded successfully")
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         print("\nActual format string substitution:")
-        print("Parameters passed: %d arguments" % len([src_ip_hex, dst_ip_hex, src_port, dst_port, protocol_filter, vm_ifindex, phy_ifindex, direction_filter, latency_threshold_ns]))
+        print("Parameters passed: %d arguments" % len([src_ip_hex, dst_ip_hex, src_port, dst_port, protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2, direction_filter, latency_threshold_ns]))
         sys.exit(1)
     
     b["events"].open_perf_buffer(print_event)

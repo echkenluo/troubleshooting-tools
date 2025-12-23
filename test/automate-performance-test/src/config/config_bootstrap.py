@@ -598,26 +598,23 @@ class ConfigBootstrap:
         prefix = env_name  # 'host' or 'vm'
 
         # Get physical interface and bond members
+        # PHY_INTERFACE: comma-separated list of interfaces for bond scenarios (e.g., "eth0,eth1")
+        #                or single interface name (e.g., "enp94s0f0np0")
         phy_interface = network.get('server_physical_interface', '')
         phy_members = network.get('server_physical_nic_members', [])
 
-        # For tools that need to monitor on bond members (e.g., icmp_rtt)
-        # PHY_INTERFACE_MEMBER1: first bond member or physical interface
-        # PHY_INTERFACE_MEMBER2: second bond member or empty (auto-removed if unset)
         if phy_members and len(phy_members) >= 1:
-            phy_member1 = phy_members[0]
-            phy_member2 = phy_members[1] if len(phy_members) >= 2 else ''
+            # Bond scenario: use comma-separated member interfaces
+            phy_interface_value = ','.join(phy_members)
         else:
-            phy_member1 = phy_interface
-            phy_member2 = ''
+            # Single NIC scenario: use physical interface name directly
+            phy_interface_value = phy_interface
 
         variables = {
             f'{prefix}_LOCAL_IP': server.get('test_ip', ''),
             f'{prefix}_REMOTE_IP': client.get('test_ip', ''),
             'INTERNAL_INTERFACE': network.get('internal_interface', ''),
-            'PHY_INTERFACE': phy_interface,
-            'PHY_INTERFACE_MEMBER1': phy_member1,
-            'PHY_INTERFACE_MEMBER2': phy_member2,
+            'PHY_INTERFACE': phy_interface_value,
             'VM_INTERFACE': network.get('server_vm_interface', network.get('vm_interface', '')),
             'QEMU_PID': kvm_server.get('qemu_pid', ''),
         }

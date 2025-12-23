@@ -7,7 +7,7 @@
     {
       "id": 1,
       "name": "system_network_perfomance_metrics_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -20,7 +20,7 @@
     {
       "id": 2,
       "name": "system_network_perfomance_metrics_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -33,7 +33,7 @@
     {
       "id": 3,
       "name": "system_network_perfomance_metrics_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -46,7 +46,7 @@
     {
       "id": 4,
       "name": "system_network_perfomance_metrics_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-storage --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -59,7 +59,7 @@
     {
       "id": 5,
       "name": "system_network_latency_details_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -72,7 +72,7 @@
     {
       "id": 6,
       "name": "system_network_latency_details_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -85,7 +85,7 @@
     {
       "id": 7,
       "name": "system_network_latency_details_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -98,7 +98,7 @@
     {
       "id": 8,
       "name": "system_network_latency_details_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -111,7 +111,7 @@
     {
       "id": 9,
       "name": "system_network_latency_summary_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol tcp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -124,7 +124,7 @@
     {
       "id": 10,
       "name": "system_network_latency_summary_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol tcp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -137,7 +137,7 @@
     {
       "id": 11,
       "name": "system_network_latency_summary_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --protocol udp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -150,7 +150,7 @@
     {
       "id": 12,
       "name": "system_network_latency_summary_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface bond-m-r9l05wjsk --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp135s0f0np0,enp135s0f1np1 --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --protocol udp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -163,7 +163,7 @@
     {
       "id": 13,
       "name": "system_network_icmp_rtt_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --phy-iface1 enp135s0f0np0 --phy-iface2 enp135s0f1np1 --latency-ms 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 10.20.128.112 --dst-ip 10.20.128.111 --direction rx --phy-interface enp135s0f0np0,enp135s0f1np1 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -176,7 +176,7 @@
     {
       "id": 14,
       "name": "system_network_icmp_rtt_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --phy-iface1 enp135s0f0np0 --phy-iface2 enp135s0f1np1 --latency-ms 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 10.20.128.111 --dst-ip 10.20.128.112 --direction tx --phy-interface enp135s0f0np0,enp135s0f1np1 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -189,7 +189,7 @@
     {
       "id": 15,
       "name": "vm_network_latency_summary_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -202,7 +202,7 @@
     {
       "id": 16,
       "name": "vm_network_latency_summary_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -215,7 +215,7 @@
     {
       "id": 17,
       "name": "vm_network_latency_summary_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -228,7 +228,7 @@
     {
       "id": 18,
       "name": "vm_network_latency_summary_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -241,7 +241,7 @@
     {
       "id": 19,
       "name": "vm_network_latency_summary_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -254,7 +254,7 @@
     {
       "id": 20,
       "name": "vm_network_latency_summary_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --interval 1",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -267,7 +267,7 @@
     {
       "id": 21,
       "name": "vm_network_latency_details_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -280,7 +280,7 @@
     {
       "id": 22,
       "name": "vm_network_latency_details_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -293,7 +293,7 @@
     {
       "id": 23,
       "name": "vm_network_latency_details_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -306,7 +306,7 @@
     {
       "id": 24,
       "name": "vm_network_latency_details_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -319,7 +319,7 @@
     {
       "id": 25,
       "name": "vm_network_latency_details_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -332,7 +332,7 @@
     {
       "id": 26,
       "name": "vm_network_latency_details_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -345,7 +345,7 @@
     {
       "id": 27,
       "name": "vm_network_performance_metrics_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol tcp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -358,7 +358,7 @@
     {
       "id": 28,
       "name": "vm_network_performance_metrics_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol tcp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -371,7 +371,7 @@
     {
       "id": 29,
       "name": "vm_network_performance_metrics_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol udp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -384,7 +384,7 @@
     {
       "id": 30,
       "name": "vm_network_performance_metrics_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol udp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -397,7 +397,7 @@
     {
       "id": 31,
       "name": "vm_network_performance_metrics_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction rx --src-ip 20.20.30.12 --dst-ip 20.20.30.11 --protocol icmp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -410,7 +410,7 @@
     {
       "id": 32,
       "name": "vm_network_performance_metrics_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface bond-m-r9l05wjsk --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet230 --phy-interface enp135s0f0np0,enp135s0f1np1 --direction tx --src-ip 20.20.30.11 --dst-ip 20.20.30.12 --protocol icmp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",

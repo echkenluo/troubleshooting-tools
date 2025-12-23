@@ -1016,10 +1016,8 @@ Examples:
                       help='Primary IP of the host where this script runs. This IP is used as SRC_IP_FILTER in BPF. For "tx" trace, this is the ICMP request source. For "rx" trace, this is the local IP that receives the request and sends the reply.')
     parser.add_argument('--dst-ip', type=str, required=True,
                       help='Secondary IP involved in the trace. This IP is used as DST_IP_FILTER in BPF. For "tx" trace, this is the ICMP request destination. For "rx" trace, this is the remote IP sending the request.')
-    parser.add_argument('--phy-iface1', type=str, required=True,
-                      help='First physical interface to monitor (e.g., for dev_queue_xmit on request path, or __netif_receive_skb on reply path).')
-    parser.add_argument('--phy-iface2', type=str, required=False, default=None,
-                      help='Second physical interface to monitor. If not provided, phy-iface1 will be used for both checks (effectively monitoring a single interface).')
+    parser.add_argument('--phy-interface', type=str, required=True,
+                      help='Physical interface(s) to monitor. Supports comma-separated list for bond members (e.g., enp94s0f0np0 or eth0,eth1)')
     parser.add_argument('--latency-ms', type=float, default=0,
                       help='Minimum round-trip latency threshold in ms to report (default: 0, report all).')
     parser.add_argument('--direction', type=str, choices=["tx", "rx"], default="tx",
@@ -1029,33 +1027,27 @@ Examples:
     
     args = parser.parse_args()
     
-    direction_val = 0 if args.direction == "tx" else 1 
-    
+    direction_val = 0 if args.direction == "tx" else 1
+
+    # Support multiple interfaces (split by comma)
+    phy_interfaces = args.phy_interface.split(',')
     try:
-        ifindex1 = get_if_index(args.phy_iface1)
-        if args.phy_iface2:
-            ifindex2 = get_if_index(args.phy_iface2)
-        else:
-            ifindex2 = ifindex1 # Use ifindex1 if iface2 is not provided
+        ifindex1 = get_if_index(phy_interfaces[0].strip())
+        ifindex2 = get_if_index(phy_interfaces[1].strip()) if len(phy_interfaces) > 1 else ifindex1
     except OSError as e:
         print("Error getting interface index: %s" % e)
         sys.exit(1)
-        
+
     src_ip_hex_val = ip_to_hex(args.src_ip)
     dst_ip_hex_val = ip_to_hex(args.dst_ip)
-    
+
     latency_threshold_ns_val = int(args.latency_ms * 1000000)
-    
+
     print("=== ICMP Round-Trip Latency Tracer ===")
     print("Trace Direction: %s" % args.direction.upper())
-    print("SRC_IP_FILTER (Configured Local IP): %s (0x%x)" % (args.src_ip, socket.ntohl(src_ip_hex_val))) 
+    print("SRC_IP_FILTER (Configured Local IP): %s (0x%x)" % (args.src_ip, socket.ntohl(src_ip_hex_val)))
     print("DST_IP_FILTER (Configured Remote IP): %s (0x%x)" % (args.dst_ip, socket.ntohl(dst_ip_hex_val)))
-    if args.phy_iface2 and args.phy_iface1 != args.phy_iface2:
-        print("Monitoring physical interfaces: %s (ifindex %d) and %s (ifindex %d)" % 
-              (args.phy_iface1, ifindex1, args.phy_iface2, ifindex2))
-    else:
-        print("Monitoring physical interface: %s (ifindex %d)" % 
-              (args.phy_iface1, ifindex1))
+    print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, ifindex1, ifindex2))
     
     if latency_threshold_ns_val > 0:
         print("Reporting only round trips with latency >= %.3f ms" % args.latency_ms)

@@ -507,7 +507,7 @@ sudo bpftrace <脚本路径> [参数]
 **接口参数：**
 
 - `--vm-interface INTERFACE`：虚拟机接口（如 tap0、vnet0）
-- `--phy-interface INTERFACE`：物理接口（如 eth0、ens3）
+- `--phy-interface INTERFACE`：物理接口，支持逗号分隔列表用于 bond 场景（如 eth0 或 eth0,eth1）
 - `--internal-interface INTERFACE`：内部接口（用于系统级工具）
 
 **方向和行为控制：**
@@ -566,7 +566,7 @@ sudo python3 ebpf-tools/performance/system-network/system_network_perfomance_met
 # ICMP 往返时间测量
 sudo python3 ebpf-tools/performance/system-network/system_network_icmp_rtt.py \
   --src-ip 10.132.114.11 --dst-ip 10.132.114.12 \
-  --direction tx --phy-iface1 ens11
+  --direction tx --phy-interface ens11
 ```
 
 #### 4.2.3 虚拟机网络性能工具

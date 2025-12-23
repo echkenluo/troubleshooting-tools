@@ -163,7 +163,7 @@
     {
       "id": 13,
       "name": "system_network_icmp_rtt_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 121.2.2.7 --dst-ip 121.2.2.5 --direction rx --phy-iface1 p2p1 --latency-ms 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 121.2.2.7 --dst-ip 121.2.2.5 --direction rx --phy-interface p2p1 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -176,7 +176,7 @@
     {
       "id": 14,
       "name": "system_network_icmp_rtt_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 121.2.2.5 --dst-ip 121.2.2.7 --direction tx --phy-iface1 p2p1 --latency-ms 1",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 121.2.2.5 --dst-ip 121.2.2.7 --direction tx --phy-interface p2p1 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
