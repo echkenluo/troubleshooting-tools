@@ -29,13 +29,15 @@ def setup_logging(log_file: str):
     )
 
 
-def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger) -> bool:
+def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger,
+                        filter_options: dict = None) -> bool:
     """Run single automation test iteration
 
     Args:
         config_dir: Configuration directory path
         iteration: Current iteration number
         logger: Logger instance
+        filter_options: Optional dict with filter options (tools, environments, etc.)
 
     Returns:
         True if successful, False otherwise
@@ -56,6 +58,19 @@ def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger)
             "scripts/run_automation.py",
             "--config-dir", config_dir
         ]
+
+        # Add filter options if provided
+        if filter_options:
+            if filter_options.get('tools'):
+                cmd.extend(['--tools'] + filter_options['tools'])
+            if filter_options.get('environments'):
+                cmd.extend(['--environments'] + filter_options['environments'])
+            if filter_options.get('category'):
+                cmd.extend(['--category'] + filter_options['category'])
+            if filter_options.get('protocol'):
+                cmd.extend(['--protocol', filter_options['protocol']])
+            if filter_options.get('direction'):
+                cmd.extend(['--direction', filter_options['direction']])
 
         logger.info(f"Executing command: {' '.join(cmd)}")
 
@@ -295,6 +310,18 @@ def main():
     parser.add_argument('--no-cleanup', action='store_true',
                        help='Skip remote cleanup after collecting results')
 
+    # Filter options (passed to run_automation.py)
+    parser.add_argument('--tools', nargs='+',
+                       help='Specific tools to test (passed to run_automation.py)')
+    parser.add_argument('--environments', nargs='+',
+                       help='Specific environments to test: host, vm (passed to run_automation.py)')
+    parser.add_argument('--category', nargs='+',
+                       help='Filter by tool category, supports multiple (passed to run_automation.py)')
+    parser.add_argument('--protocol', choices=['tcp', 'udp', 'icmp'],
+                       help='Filter by protocol (passed to run_automation.py)')
+    parser.add_argument('--direction', choices=['rx', 'tx'],
+                       help='Filter by direction (passed to run_automation.py)')
+
     args = parser.parse_args()
 
     # Setup paths
@@ -314,6 +341,25 @@ def main():
     logger.info(f"Delay: {args.delay} seconds")
     logger.info(f"Results directory: {results_dir}")
     logger.info(f"Remote cleanup: {'DISABLED' if args.no_cleanup else 'ENABLED'}")
+
+    # Build filter options
+    filter_options = {}
+    if args.tools:
+        filter_options['tools'] = args.tools
+        logger.info(f"Filter - tools: {args.tools}")
+    if args.environments:
+        filter_options['environments'] = args.environments
+        logger.info(f"Filter - environments: {args.environments}")
+    if args.category:
+        filter_options['category'] = args.category
+        logger.info(f"Filter - category: {args.category}")
+    if args.protocol:
+        filter_options['protocol'] = args.protocol
+        logger.info(f"Filter - protocol: {args.protocol}")
+    if args.direction:
+        filter_options['direction'] = args.direction
+        logger.info(f"Filter - direction: {args.direction}")
+
     logger.info("="*80)
 
     try:
@@ -353,7 +399,8 @@ def main():
                 iteration_start = datetime.now()
 
                 # Run automation test
-                test_success = run_automation_test(args.config_dir, iteration, logger)
+                test_success = run_automation_test(args.config_dir, iteration, logger,
+                                                   filter_options if filter_options else None)
 
                 if not test_success:
                     logger.error(f"Iteration {iteration} test execution failed")

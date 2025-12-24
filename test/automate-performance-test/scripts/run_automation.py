@@ -276,8 +276,8 @@ Examples:
                        help='Specific tools to test (default: all)')
     parser.add_argument('--environments', nargs='+',
                        help='Specific environments to test (default: all)')
-    parser.add_argument('--category',
-                       help='Filter by tool category (e.g., performance/vm-network)')
+    parser.add_argument('--category', nargs='+',
+                       help='Filter by tool category, supports multiple and prefix match (e.g., ovs kvm-virt-network)')
     parser.add_argument('--protocol', choices=['tcp', 'udp', 'icmp'],
                        help='Filter by protocol')
     parser.add_argument('--direction', choices=['rx', 'tx'],
@@ -357,10 +357,10 @@ Examples:
             if args.environments:
                 test_cases = [c for c in test_cases if c.get('environment') in args.environments]
 
-            # Filter by category
+            # Filter by category (supports multiple categories with prefix match)
             if args.category:
                 test_cases = [c for c in test_cases
-                             if c.get('category', '').startswith(args.category)]
+                             if any(c.get('category', '').startswith(cat) for cat in args.category)]
 
             # Filter by protocol
             if args.protocol:
