@@ -12,15 +12,36 @@ logger = logging.getLogger(__name__)
 class SSHManager:
     """SSH connection manager"""
 
-    def __init__(self, ssh_config: Dict):
+    def __init__(self, ssh_config: Dict, keepalive_interval: int = 30):
         """Initialize SSH manager
 
         Args:
             ssh_config: SSH config dict
+            keepalive_interval: SSH keepalive interval in seconds (default: 30)
         """
         self.ssh_config = ssh_config
         self.connections = {}
         self.clients = {}
+        self.keepalive_interval = keepalive_interval
+
+    def _is_connection_alive(self, client: paramiko.SSHClient) -> bool:
+        """Check if SSH connection is still alive
+
+        Args:
+            client: SSH client instance
+
+        Returns:
+            True if connection is active, False otherwise
+        """
+        try:
+            transport = client.get_transport()
+            if transport is None or not transport.is_active():
+                return False
+            # Send a keepalive packet to verify connection
+            transport.send_ignore()
+            return True
+        except Exception:
+            return False
 
     def connect(self, host_ref: str) -> paramiko.SSHClient:
         """Establish SSH connection
@@ -31,8 +52,19 @@ class SSHManager:
         Returns:
             SSH client instance
         """
+        # Check if cached connection is still valid
         if host_ref in self.clients:
-            return self.clients[host_ref]
+            client = self.clients[host_ref]
+            if self._is_connection_alive(client):
+                return client
+            else:
+                # Connection is stale, close and remove it
+                logger.warning(f"Connection to {host_ref} is stale, reconnecting...")
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                del self.clients[host_ref]
 
         if host_ref not in self.ssh_config['ssh_hosts']:
             raise ValueError(f"Unknown host reference: {host_ref}")
@@ -48,6 +80,11 @@ class SSHManager:
                 username=host_config['user'],
                 timeout=10
             )
+            # Enable SSH keepalive to prevent connection timeout
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(self.keepalive_interval)
+                logger.debug(f"SSH keepalive set to {self.keepalive_interval}s for {host_ref}")
             self.clients[host_ref] = client
             logger.info(f"Connected to {host_ref} ({host_config['host']})")
             return client
