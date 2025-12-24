@@ -7,6 +7,7 @@
 #
 # Options:
 #   -v, --version VERSION   Package version (default: 1.0.0)
+#   -r, --release RELEASE   Release version (default: 1)
 #   -d, --dist DIST         Distribution tag: el7, oe1, tl3 (default: el7)
 #   -o, --output DIR        Output directory for RPM (default: ./output)
 #   -D, --docker            Use Docker to build (required on macOS)
@@ -14,6 +15,7 @@
 #
 # Examples:
 #   ./build.sh -v 1.0.0 -d el7           # Build on Linux
+#   ./build.sh -v 1.0.0 -r 2 -d el7      # Build with release 2
 #   ./build.sh -v 1.0.0 -d el7 -D        # Build using Docker (macOS/Linux)
 #   ./build.sh -v 1.0.0 -d oe1 -o /tmp/rpms
 #   ./build.sh -d tl3
@@ -25,6 +27,7 @@ set -e
 
 # Default values
 VERSION="1.0.0"
+RELEASE="1"
 DIST="el7"
 OUTPUT_DIR="./output"
 USE_DOCKER=false
@@ -58,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             VERSION="$2"
             shift 2
             ;;
+        -r|--release)
+            RELEASE="$2"
+            shift 2
+            ;;
         -d|--dist)
             DIST="$2"
             shift 2
@@ -88,7 +95,7 @@ case $DIST in
         ;;
 esac
 
-log "Building ${PKG_NAME}-${VERSION}-1.${DIST}.noarch.rpm"
+log "Building ${PKG_NAME}-${VERSION}-${RELEASE}.${DIST}.noarch.rpm"
 
 # Docker build mode
 if [ "$USE_DOCKER" = true ]; then
@@ -119,7 +126,7 @@ if [ "$USE_DOCKER" = true ]; then
         -v "${SCRIPT_DIR}:/build:ro" \
         -v "${OUTPUT_DIR_ABS}:/output" \
         "${DOCKER_IMAGE}" \
-        /bin/bash /build/build-docker.sh "${VERSION}" "${DIST}"
+        /bin/bash /build/build-docker.sh "${VERSION}" "${DIST}" "${RELEASE}"
 
     log "Build complete. Output files:"
     ls -la "${OUTPUT_DIR_ABS}"/*.rpm 2>/dev/null || true
@@ -165,6 +172,7 @@ rpmbuild \
     --define "_topdir ${BUILD_ROOT}" \
     --define "dist .${DIST}" \
     --define "version ${VERSION}" \
+    --define "release_ver ${RELEASE}" \
     -ba "${BUILD_ROOT}/SPECS/measurement-tools.spec"
 
 # Copy output RPMs

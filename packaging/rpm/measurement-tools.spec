@@ -11,10 +11,10 @@
 
 Name:           measurement-tools
 Version:        %{?version}%{!?version:1.0.0}
-Release:        1%{?dist}
+Release:        %{?release_ver}%{!?release_ver:1}%{?dist}
 Summary:        eBPF-based network troubleshooting and performance analysis tools
 
-License:        Commercial
+License:        Proprietary 
 Group:          Applications/System
 BuildArch:      noarch
 
@@ -58,6 +58,9 @@ done
 find %{buildroot}/usr/share/measurement-tools -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find %{buildroot}/usr/share/measurement-tools -type f -name "*.pyc" -delete 2>/dev/null || true
 
+# Remove bpftrace scripts (not included in this package)
+find %{buildroot}/usr/share/measurement-tools -type f -name "*.bt" -delete 2>/dev/null || true
+
 %clean
 rm -rf %{buildroot}
 
@@ -66,7 +69,7 @@ rm -rf %{buildroot}
 /usr/share/measurement-tools
 
 %changelog
-* Mon Nov 27 2025 1.0.0-1
+* Mon Nov 25 2024 - 1.0.0-1
 - Initial release
 - Include BCC Python tools and bpftrace scripts
 - Support for packet drop monitoring, latency analysis

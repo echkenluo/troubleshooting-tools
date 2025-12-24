@@ -4,15 +4,16 @@
 # This script runs inside the Docker container
 #
 # Usage (inside container):
-#   ./build-docker.sh [VERSION] [DIST]
+#   ./build-docker.sh [VERSION] [DIST] [RELEASE]
 
 set -e
 
 VERSION="${1:-1.0.0}"
 DIST="${2:-el7}"
+RELEASE="${3:-1}"
 PKG_NAME="measurement-tools"
 
-echo "Building ${PKG_NAME}-${VERSION}-1.${DIST}.noarch.rpm"
+echo "Building ${PKG_NAME}-${VERSION}-${RELEASE}.${DIST}.noarch.rpm"
 
 # Fix CentOS 7 EOL repo issue
 if [ -f /etc/centos-release ] && grep -q "CentOS Linux release 7" /etc/centos-release 2>/dev/null; then
@@ -51,6 +52,7 @@ echo "Building RPM..."
 rpmbuild \
     --define "dist .${DIST}" \
     --define "version ${VERSION}" \
+    --define "release_ver ${RELEASE}" \
     -ba ~/rpmbuild/SPECS/measurement-tools.spec
 
 # Copy output to /output
