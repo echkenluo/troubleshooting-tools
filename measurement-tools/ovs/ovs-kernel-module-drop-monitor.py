@@ -384,15 +384,15 @@ def print_ovs_drop_event(cpu, data, size):
             # First find clone_execute in the stack
             for i, addr in enumerate(stack_trace):
                 func_name = b.ksym(addr)
-                if "clone_execute" in func_name:
+                if b"clone_execute" in func_name:
                     clone_execute_index = i
                     break
-            
+
             # If found, check if kfree_skb is the function immediately before it in the stack
             # (In stack traces, the caller appears after the callee)
             if clone_execute_index is not None and clone_execute_index > 0:
                 prev_func = b.ksym(stack_trace[clone_execute_index - 1])
-                if "kfree_skb" in prev_func:
+                if b"kfree_skb" in prev_func:
                     found_target_path = True
             
             if not found_target_path:
