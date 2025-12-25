@@ -341,6 +341,46 @@ class InitHooks:
                     'pid': ebpf_pid
                 })
 
+                # Wait for BPF compilation to complete and check process health
+                # This ensures we detect compilation failures before starting monitoring
+                bpf_compile_wait = self.config.get('perf', {}).get('performance_tests', {}).get('bpf_compile_wait', 15)
+                logger.info(f"Waiting {bpf_compile_wait}s for BPF compilation to complete...")
+
+                health_check_cmd = f"""
+                    echo "BPF compilation wait: {bpf_compile_wait}s" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
+                    echo "Waiting for BPF compilation at $(date '+%Y-%m-%d %H:%M:%S.%N')" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
+
+                    # Wait for BPF compilation
+                    sleep {bpf_compile_wait}
+
+                    # Check if process is still alive
+                    if ps -p {ebpf_pid} >/dev/null 2>&1; then
+                        echo "BPF compilation check PASSED: process {ebpf_pid} still alive at $(date '+%Y-%m-%d %H:%M:%S.%N')" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
+                        echo "ALIVE"
+                    else
+                        echo "BPF compilation check FAILED: process {ebpf_pid} exited during compilation at $(date '+%Y-%m-%d %H:%M:%S.%N')" >> {ebpf_result_path}/ebpf_start_{timestamp}.log
+                        echo "EXITED"
+                    fi
+                """
+                stdout, stderr, status = self.ssh_manager.execute_command(ebpf_host_ref, health_check_cmd)
+                process_status = (stdout or "").strip()
+
+                if process_status == "EXITED":
+                    logger.warning(f"eBPF process {ebpf_pid} exited during BPF compilation (within {bpf_compile_wait}s)")
+                    results['tasks'].append({
+                        'name': 'bpf_compile_check',
+                        'status': False,
+                        'error': f'Process exited during BPF compilation'
+                    })
+                    results['ebpf_process_healthy'] = False
+                else:
+                    logger.info(f"eBPF process {ebpf_pid} is healthy after BPF compilation wait")
+                    results['tasks'].append({
+                        'name': 'bpf_compile_check',
+                        'status': True
+                    })
+                    results['ebpf_process_healthy'] = True
+
                 # Start tool-level monitoring (covers entire tool lifecycle) on eBPF host
                 monitor_start_cmd = f'echo "eBPF monitoring start time: $(date "+%Y-%m-%d %H:%M:%S.%N"), PID: {ebpf_pid}" > {ebpf_result_path}/ebpf_monitoring/monitor_start_{timestamp}.log'
                 logger.info(f"DEBUG: monitor_start_cmd = {monitor_start_cmd}")
@@ -532,8 +572,9 @@ class InitHooks:
         # This eliminates the problems with nested quotes and command substitutions
 
         monitor_script_path = f"{result_path}/ebpf_monitoring/resource_monitor_{timestamp}.sh"
+        monitor_log_file = f"{result_path}/ebpf_monitoring/ebpf_resource_monitor_{timestamp}.log"
 
-        # Generate monitoring script content
+        # Generate monitoring script content (without START_DATETIME - will be written after script starts)
         monitor_script_content = f"""#!/bin/bash
 # eBPF Resource Monitor Script
 # Auto-generated at {timestamp}
@@ -560,9 +601,25 @@ if ! command -v pidstat >/dev/null 2>&1; then
     exit 1
 fi
 
-# Write start timestamp header
-START_DATETIME=$(date '+%Y-%m-%d %H:%M:%S.%N')
-START_EPOCH=$(date +%s)
+# Signal ready for Executor to write timestamp
+echo "READY" > "$RESULT_PATH/resource_monitor_ready_$TIMESTAMP.txt"
+
+# Wait for Executor to write START_DATETIME (max 5 seconds)
+WAIT_COUNT=0
+while [ ! -f "$RESULT_PATH/resource_monitor_timestamp_$TIMESTAMP.txt" ] && [ $WAIT_COUNT -lt 50 ]; do
+    sleep 0.1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Read timestamp from file (written by Executor)
+if [ -f "$RESULT_PATH/resource_monitor_timestamp_$TIMESTAMP.txt" ]; then
+    source "$RESULT_PATH/resource_monitor_timestamp_$TIMESTAMP.txt"
+else
+    # Fallback to local time if Executor timestamp not available
+    START_DATETIME=$(date '+%Y-%m-%d %H:%M:%S.%N')
+    START_EPOCH=$(date +%s)
+fi
+
 echo "# START_DATETIME: $START_DATETIME  START_EPOCH: $START_EPOCH  INTERVAL: ${{INTERVAL}}s  PID: $EBPF_PID" >> "$RESULT_PATH/ebpf_resource_monitor_$TIMESTAMP.log"
 
 # Run pidstat monitoring
@@ -591,11 +648,36 @@ chmod +x {monitor_script_path}"""
         # Execute script in background with setsid for process group management
         execute_script_cmd = f"""
             setsid bash {monitor_script_path} >> {result_path}/ebpf_monitoring/ebpf_resource_monitor_{timestamp}.log 2>&1 &
-            sleep 0.3
         """
 
         logger.info(f"DEBUG: Executing resource monitor script: {monitor_script_path}")
         self.ssh_manager.execute_command(host_ref, execute_script_cmd)
+
+        # Wait for script to signal ready, then write Executor timestamp
+        ready_file = f"{result_path}/ebpf_monitoring/resource_monitor_ready_{timestamp}.txt"
+        timestamp_file = f"{result_path}/ebpf_monitoring/resource_monitor_timestamp_{timestamp}.txt"
+
+        wait_ready_cmd = f"""
+            WAIT_COUNT=0
+            while [ ! -f "{ready_file}" ] && [ $WAIT_COUNT -lt 30 ]; do
+                sleep 0.1
+                WAIT_COUNT=$((WAIT_COUNT + 1))
+            done
+            [ -f "{ready_file}" ] && echo "READY" || echo "TIMEOUT"
+        """
+        stdout, stderr, status = self.ssh_manager.execute_command(host_ref, wait_ready_cmd)
+
+        if stdout.strip() == "READY":
+            # Generate Executor timestamp NOW - after script is ready and waiting
+            executor_start_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            executor_start_epoch = int(datetime.now().timestamp())
+
+            # Write timestamp to file for script to read
+            write_timestamp_cmd = f'echo "START_DATETIME=\\"{executor_start_datetime}\\"" > {timestamp_file} && echo "START_EPOCH=\\"{executor_start_epoch}\\"" >> {timestamp_file}'
+            self.ssh_manager.execute_command(host_ref, write_timestamp_cmd)
+            logger.info(f"DEBUG: Wrote Executor timestamp to {timestamp_file}: {executor_start_datetime}")
+        else:
+            logger.warning(f"DEBUG: Script ready signal timeout, script will use local timestamp")
 
         # Verify PID file creation
         verify_cmd = f"""
