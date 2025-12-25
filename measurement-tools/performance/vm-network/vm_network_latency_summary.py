@@ -38,6 +38,40 @@ import sys
 import datetime
 import fcntl
 import signal
+import re
+
+def find_kernel_function(base_name):
+    """
+    Find actual kernel function name, handling GCC clone suffixes.
+    GCC may generate optimized clones with suffixes like:
+      .isra.N     - Inter-procedural Scalar Replacement of Aggregates
+      .constprop.N - Constant Propagation
+      .part.N     - Partial inlining
+    Returns the actual symbol name or None if not found.
+    """
+    pattern = re.compile(
+        r'^[0-9a-f]+\s+[tT]\s+(' + re.escape(base_name) +
+        r'(?:\.(?:isra|constprop|part)\.\d+)*)(?:\s+\[\w+\])?$'
+    )
+
+    candidates = []
+    try:
+        with open('/proc/kallsyms', 'r') as f:
+            for line in f:
+                match = pattern.match(line.strip())
+                if match:
+                    candidates.append(match.group(1))
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+
+    # Prefer exact match, then shortest suffix
+    if base_name in candidates:
+        return base_name
+
+    return min(candidates, key=len)
 
 # ctypes structure for stage pair key
 class stage_pair_key_t(ctypes.Structure):
@@ -663,9 +697,10 @@ int kprobe__ovs_flow_key_extract_userspace(struct pt_regs *ctx, struct net *net,
     return 0;
 }
 
-int kprobe__ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
+// Manual attach - function name varies by kernel/compiler (GCC clone suffixes)
+int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
     if (!skb) return 0;
-    
+
     if (post_ct) {
         // Conntrack action phase
         if (DIRECTION_FILTER != 2) {
@@ -683,7 +718,7 @@ int kprobe__ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *in
             handle_stage_event(ctx, skb, STG_FLOW_EXTRACT_END_TX, 2);
         }
     }
-    
+
     return 0;
 }
 
@@ -1097,6 +1132,20 @@ Examples:
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
+
+    # Manual attachment for ovs_ct_update_key (function name varies by kernel/compiler)
+    # GCC may generate optimized clones: .isra.N, .constprop.N, .part.N
+    ovs_ct_func = find_kernel_function("ovs_ct_update_key")
+    if ovs_ct_func:
+        try:
+            b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
+            print("Attached kprobe to %s" % ovs_ct_func)
+        except Exception as e:
+            print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
+            print("         CT flow tracking will be disabled")
+    else:
+        print("Warning: ovs_ct_update_key not found in kallsyms")
+        print("         CT flow tracking will be disabled")
     
     print("\nCollecting adjacent stage latency data... Hit Ctrl-C to end.")
     print("Statistics will be displayed every %d seconds\n" % args.interval)
