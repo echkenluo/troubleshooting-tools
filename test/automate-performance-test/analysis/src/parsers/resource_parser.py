@@ -2,6 +2,7 @@
 
 import re
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -31,12 +32,13 @@ class ResourceParser:
         Returns:
             Dictionary with full cycle stats and time range stats
         """
-        # Parse monitor metadata (interval, etc.)
+        # Parse monitor metadata (interval, date, etc.)
         metadata = ResourceParser._parse_monitor_metadata(log_path)
         interval = metadata.get("interval", 2)
+        start_date = metadata.get("start_date")
 
-        # Parse all records
-        records = ResourceParser._parse_records(log_path)
+        # Parse all records (pass start_date for AM/PM time conversion)
+        records = ResourceParser._parse_records(log_path, start_date)
         if not records:
             logger.warning(f"No records found in {log_path}")
             return None
@@ -75,7 +77,7 @@ class ResourceParser:
             log_path: Path to resource monitor log file
 
         Returns:
-            Dictionary with metadata (interval, start_epoch, etc.)
+            Dictionary with metadata (interval, start_epoch, start_date, etc.)
         """
         metadata = {"interval": 2}  # Default interval
 
@@ -88,11 +90,16 @@ class ResourceParser:
                             match = re.search(r'INTERVAL:\s*(\d+)s', line)
                             if match:
                                 metadata["interval"] = int(match.group(1))
-                        # Could also parse START_EPOCH, PID if needed in future
+                        # Parse START_EPOCH
                         if "START_EPOCH:" in line:
                             match = re.search(r'START_EPOCH:\s*(\d+)', line)
                             if match:
                                 metadata["start_epoch"] = int(match.group(1))
+                        # Parse START_DATETIME to extract date (for AM/PM time format)
+                        if "START_DATETIME:" in line:
+                            match = re.search(r'START_DATETIME:\s*(\d{4}-\d{2}-\d{2})', line)
+                            if match:
+                                metadata["start_date"] = match.group(1)
                     elif line.strip() and not line.startswith('Linux'):
                         # Stop at first data line (after headers)
                         break
@@ -102,11 +109,12 @@ class ResourceParser:
         return metadata
 
     @staticmethod
-    def _parse_records(log_path: str) -> List[Dict]:
+    def _parse_records(log_path: str, start_date: Optional[str] = None) -> List[Dict]:
         """Parse all pidstat records from log file
 
         Args:
             log_path: Path to log file
+            start_date: Date string (YYYY-MM-DD) for AM/PM time conversion
 
         Returns:
             List of record dictionaries
@@ -125,7 +133,7 @@ class ResourceParser:
                         continue
 
                     # Parse data line
-                    record = ResourceParser._parse_pidstat_line(line)
+                    record = ResourceParser._parse_pidstat_line(line, start_date)
                     if record:
                         records.append(record)
 
@@ -140,50 +148,69 @@ class ResourceParser:
         return records
 
     @staticmethod
-    def _parse_pidstat_line(line: str) -> Optional[Dict]:
+    def _parse_pidstat_line(line: str, start_date: Optional[str] = None) -> Optional[Dict]:
         """Parse a single pidstat output line
 
-        Format:
+        Format 1 (Unix timestamp):
          1761055961     0     47899   84.00    7.00    0.00   91.00     5   8292.00      0.00  356276 146004   0.03  python2
 
-        Fields:
-         0: Time (Unix timestamp)
-         1: UID
-         2: PID
-         3: %usr
-         4: %system
-         5: %guest
-         6: %CPU
-         7: CPU
-         8: minflt/s
-         9: majflt/s
-        10: VSZ (KB)
-        11: RSS (KB)
-        12: %MEM
-        13: Command
+        Format 2 (Time with AM/PM):
+         11:18:30 PM     0    933091   27.36    1.00    0.00   70.65   28.36    58   1567.16      0.00  411996  115192   0.02  python3
 
         Args:
             line: Line from pidstat output
+            start_date: Date string (YYYY-MM-DD) for AM/PM time conversion
 
         Returns:
             Dictionary with parsed fields, or None if parsing fails
         """
         try:
             parts = line.split()
-            if len(parts) < 13:
+            if len(parts) < 14:
                 return None
 
-            return {
-                "timestamp": int(parts[0]),
-                "cpu_percent": float(parts[6]),
-                "cpu_usr": float(parts[3]),
-                "cpu_system": float(parts[4]),
-                "rss_kb": int(parts[11]),
-                "vsz_kb": int(parts[10]),
-                "minflt_per_sec": float(parts[8]),
-                "majflt_per_sec": float(parts[9]),
-                "mem_percent": float(parts[12])
-            }
+            # Detect format by checking if second field is AM/PM
+            if parts[1] in ('AM', 'PM'):
+                # Format 2: Time AM/PM format
+                # Fields: Time, AM/PM, UID, PID, %usr, %system, %guest, %wait, %CPU, CPU, minflt/s, majflt/s, VSZ, RSS, %MEM, Command
+                offset = 2  # Skip Time and AM/PM
+
+                # Calculate epoch timestamp from date + time
+                timestamp = 0
+                if start_date:
+                    try:
+                        time_str = parts[0]  # HH:MM:SS
+                        ampm = parts[1]      # AM/PM
+                        datetime_str = f"{start_date} {time_str} {ampm}"
+                        dt = datetime.strptime(datetime_str, "%Y-%m-%d %I:%M:%S %p")
+                        timestamp = int(dt.timestamp())
+                    except ValueError as e:
+                        logger.debug(f"Failed to parse datetime: {datetime_str} - {e}")
+
+                return {
+                    "timestamp": timestamp,
+                    "cpu_percent": float(parts[offset + 6]),   # %CPU
+                    "cpu_usr": float(parts[offset + 2]),       # %usr
+                    "cpu_system": float(parts[offset + 3]),    # %system
+                    "rss_kb": int(parts[offset + 11]),         # RSS
+                    "vsz_kb": int(parts[offset + 10]),         # VSZ
+                    "minflt_per_sec": float(parts[offset + 8]), # minflt/s
+                    "majflt_per_sec": float(parts[offset + 9]), # majflt/s
+                    "mem_percent": float(parts[offset + 12])   # %MEM
+                }
+            else:
+                # Format 1: Unix timestamp format
+                return {
+                    "timestamp": int(parts[0]),
+                    "cpu_percent": float(parts[6]),
+                    "cpu_usr": float(parts[3]),
+                    "cpu_system": float(parts[4]),
+                    "rss_kb": int(parts[11]),
+                    "vsz_kb": int(parts[10]),
+                    "minflt_per_sec": float(parts[8]),
+                    "majflt_per_sec": float(parts[9]),
+                    "mem_percent": float(parts[12])
+                }
         except (ValueError, IndexError) as e:
             logger.debug(f"Failed to parse pidstat line: {line.strip()} - {e}")
             return None
@@ -227,7 +254,7 @@ class ResourceParser:
 
     @staticmethod
     def _calculate_full_cycle_stats(records: List[Dict]) -> Dict:
-        """Calculate full cycle statistics (max memory, etc.)
+        """Calculate full cycle statistics (CPU avg/max, memory max, etc.)
 
         Args:
             records: List of all pidstat records
@@ -241,10 +268,17 @@ class ResourceParser:
         max_rss_record = max(records, key=lambda r: r["rss_kb"])
         max_vsz_record = max(records, key=lambda r: r["vsz_kb"])
 
+        # Calculate CPU statistics from all records
+        cpu_values = [r["cpu_percent"] for r in records]
+        avg_cpu = round(sum(cpu_values) / len(cpu_values), 2)
+        max_cpu = round(max(cpu_values), 2)
+
         return {
             "max_rss_kb": max_rss_record["rss_kb"],
             "max_rss_timestamp": max_rss_record["timestamp"],
             "max_vsz_kb": max_vsz_record["vsz_kb"],
             "max_vsz_timestamp": max_vsz_record["timestamp"],
+            "avg_cpu_percent": avg_cpu,
+            "max_cpu_percent": max_cpu,
             "total_samples": len(records)
         }

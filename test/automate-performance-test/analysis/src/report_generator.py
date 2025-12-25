@@ -205,7 +205,7 @@ class ReportGenerator:
             "PPS Multi", "", "", "",
             "TP Single", "", "", "",
             "TP Multi", "", "", "",
-            "Full Cycle", "", "",
+            "Full Cycle", "", "", "", "",
             "Log Size", ""
         ]
 
@@ -217,7 +217,7 @@ class ReportGenerator:
             "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # PPS Multi
             "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Single
             "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Multi
-            "Max RSS (KB)", "Max VSZ (KB)", "Total Samples",  # Full Cycle
+            "Max RSS (KB)", "Max VSZ (KB)", "CPU Avg (%)", "CPU Max (%)", "Total Samples",  # Full Cycle
             "Size (Bytes)", "Size (Human)"  # Log Size
         ]
 
@@ -535,6 +535,8 @@ class ReportGenerator:
             # Full cycle
             safe_get(full_cycle, "max_rss_kb"),
             safe_get(full_cycle, "max_vsz_kb"),
+            safe_get(full_cycle, "avg_cpu_percent"),
+            safe_get(full_cycle, "max_cpu_percent"),
             safe_get(full_cycle, "total_samples"),
             # Log size
             safe_get(log_size, "final_size_bytes"),
@@ -662,6 +664,20 @@ class ReportGenerator:
         avg_cpu = round(sum(cpu_avgs) / len(cpu_avgs), 2) if cpu_avgs else "N/A"
         max_cpu = round(max(cpu_maxs), 2) if cpu_maxs else "N/A"
         max_mem = round(max(mem_maxs), 2) if mem_maxs else "N/A"
+
+        # Fallback to full_cycle data if time_range_stats is empty
+        if avg_cpu == "N/A":
+            full_cycle_cpu_avg = safe_get(full_cycle, "avg_cpu_percent")
+            if full_cycle_cpu_avg != "N/A":
+                avg_cpu = full_cycle_cpu_avg
+        if max_cpu == "N/A":
+            full_cycle_cpu_max = safe_get(full_cycle, "max_cpu_percent")
+            if full_cycle_cpu_max != "N/A":
+                max_cpu = full_cycle_cpu_max
+        if max_mem == "N/A":
+            full_cycle_mem = safe_get(full_cycle, "max_rss_kb")
+            if full_cycle_mem != "N/A":
+                max_mem = full_cycle_mem  # Keep in KB, consistent with header
 
         # Log size in MB
         log_size_bytes = safe_get(log_size, "final_size_bytes")

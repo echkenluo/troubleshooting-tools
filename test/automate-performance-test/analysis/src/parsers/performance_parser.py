@@ -96,12 +96,12 @@ class PerformanceParser:
         }
 
     @staticmethod
-    def parse_throughput_multi(json_paths: List[str], timing_path: str) -> Optional[Dict]:
+    def parse_throughput_multi(json_paths: List[str], timing_paths: List[str]) -> Optional[Dict]:
         """Parse multi-stream throughput test result
 
         Args:
             json_paths: List of paths to iperf3 JSON output files
-            timing_path: Path to timing log file
+            timing_paths: List of paths to timing log files (one per stream)
 
         Returns:
             Dictionary with aggregated throughput metrics and timing info
@@ -126,9 +126,8 @@ class PerformanceParser:
 
         throughput_gbps = bps_to_gbps(total_bps)
 
-        # Parse timing log
-        # 注意：Multi-stream throughput 的 timing 格式与 PPS 相同（Process_Start/Actual_Launch/Test_End）
-        timing = PerformanceParser._parse_timing_log(timing_path, "pps")
+        # Parse timing logs and aggregate (earliest start, latest end)
+        timing = PerformanceParser._parse_timing_logs_aggregated(timing_paths, "pps")
         if not timing:
             return None
 
@@ -195,12 +194,12 @@ class PerformanceParser:
         }
 
     @staticmethod
-    def parse_pps_multi(json_paths: List[str], timing_path: str) -> Optional[Dict]:
+    def parse_pps_multi(json_paths: List[str], timing_paths: List[str]) -> Optional[Dict]:
         """Parse multi-stream PPS test result
 
         Args:
             json_paths: List of paths to iperf3 JSON output files
-            timing_path: Path to timing log file
+            timing_paths: List of paths to timing log files (one per stream)
 
         Returns:
             Dictionary with aggregated PPS metrics and timing info
@@ -222,12 +221,9 @@ class PerformanceParser:
                 bps = data["end"]["sum_sent"]["bits_per_second"]
                 total_bps += bps
 
-                # 获取 packet_size（容错处理）
                 if packet_size is None:
-                    # 尝试从 test_start 获取
                     if "test_start" in data and "blksize" in data["test_start"]:
                         packet_size = data["test_start"]["blksize"]
-                    # 尝试从 start.test_start 获取
                     elif "start" in data and "test_start" in data["start"] and "blksize" in data["start"]["test_start"]:
                         packet_size = data["start"]["test_start"]["blksize"]
             except KeyError as e:
@@ -236,13 +232,13 @@ class PerformanceParser:
 
         if packet_size is None:
             logger.warning("Could not determine packet size from JSON files, using default 64 bytes")
-            packet_size = 64  # 默认值
+            packet_size = 64
 
         pps = int(total_bps / (packet_size * 8))
         throughput_gbps = bps_to_gbps(total_bps)
 
-        # Parse timing log
-        timing = PerformanceParser._parse_timing_log(timing_path, "pps")
+        # Parse timing logs and aggregate (earliest start, latest end)
+        timing = PerformanceParser._parse_timing_logs_aggregated(timing_paths, "pps")
         if not timing:
             return None
 
@@ -337,6 +333,55 @@ class PerformanceParser:
             return None
 
     @staticmethod
+    def _parse_timing_logs_aggregated(timing_paths: List[str], test_type: str) -> Optional[Dict]:
+        """Parse multiple timing log files and aggregate (earliest start, latest end)
+
+        For multi-stream tests, each stream has its own timing file with different
+        launch times. This method aggregates them to get the full test duration.
+
+        Args:
+            timing_paths: List of paths to timing log files
+            test_type: "throughput" or "pps"
+
+        Returns:
+            Dictionary with aggregated start_time, end_time, start_epoch, end_epoch
+        """
+        if not timing_paths:
+            logger.warning("No timing paths provided for aggregation")
+            return None
+
+        earliest_start_epoch = None
+        latest_end_epoch = None
+        earliest_start_time = None
+        latest_end_time = None
+
+        for timing_path in timing_paths:
+            timing = PerformanceParser._parse_timing_log(timing_path, test_type)
+            if not timing:
+                continue
+
+            # Track earliest start
+            if earliest_start_epoch is None or timing["start_epoch"] < earliest_start_epoch:
+                earliest_start_epoch = timing["start_epoch"]
+                earliest_start_time = timing["start_time"]
+
+            # Track latest end
+            if latest_end_epoch is None or timing["end_epoch"] > latest_end_epoch:
+                latest_end_epoch = timing["end_epoch"]
+                latest_end_time = timing["end_time"]
+
+        if earliest_start_epoch is None or latest_end_epoch is None:
+            logger.error(f"Could not parse any timing from {len(timing_paths)} files")
+            return None
+
+        return {
+            "start_time": earliest_start_time,
+            "end_time": latest_end_time,
+            "start_epoch": earliest_start_epoch,
+            "end_epoch": latest_end_epoch
+        }
+
+    @staticmethod
     def parse_all(paths: Dict) -> Dict:
         """Parse all performance data from located paths
 
@@ -404,7 +449,7 @@ class PerformanceParser:
             if "multi" in side_paths["throughput"]:
                 multi = side_paths["throughput"]["multi"]
                 multi_data = PerformanceParser.parse_throughput_multi(
-                    multi["json_files"], multi["timing"]
+                    multi["json_files"], multi["timing_files"]
                 )
                 if multi_data:
                     throughput_data["multi"] = multi_data
@@ -427,7 +472,7 @@ class PerformanceParser:
             if "multi" in side_paths["pps"]:
                 multi = side_paths["pps"]["multi"]
                 multi_data = PerformanceParser.parse_pps_multi(
-                    multi["json_files"], multi["timing"]
+                    multi["json_files"], multi["timing_files"]
                 )
                 if multi_data:
                     pps_data["multi"] = multi_data

@@ -246,11 +246,13 @@ class DataLocator:
         if multi_dir and os.path.isdir(multi_dir):
             json_pattern = os.path.join(multi_dir, "throughput_multi_*.json")
             json_files = sorted(glob.glob(json_pattern))
-            timing_file = find_latest_file(os.path.join(multi_dir, "throughput_*_timing.log"))
-            if json_files and timing_file:
+            # Get ALL timing files for multi-stream (each stream has its own timing)
+            timing_pattern = os.path.join(multi_dir, "throughput_*_timing.log")
+            timing_files = sorted(glob.glob(timing_pattern))
+            if json_files and timing_files:
                 data["multi"] = {
                     "json_files": json_files,
-                    "timing": timing_file
+                    "timing_files": timing_files  # All timing files for aggregation
                 }
 
         return data
@@ -286,11 +288,13 @@ class DataLocator:
         if multi_dir and os.path.isdir(multi_dir):
             json_pattern = os.path.join(multi_dir, "pps_multi_*.json")
             json_files = sorted(glob.glob(json_pattern))
-            timing_file = find_latest_file(os.path.join(multi_dir, "pps_*_timing.log"))
-            if json_files and timing_file:
+            # Get ALL timing files for multi-stream (each stream has its own timing)
+            timing_pattern = os.path.join(multi_dir, "pps_*_timing.log")
+            timing_files = sorted(glob.glob(timing_pattern))
+            if json_files and timing_files:
                 data["multi"] = {
                     "json_files": json_files,
-                    "timing": timing_file
+                    "timing_files": timing_files  # All timing files for aggregation
                 }
 
         return data
@@ -356,31 +360,39 @@ class DataLocator:
         """Get all tool case names for a specific topic
 
         Args:
-            topic: Topic name (e.g., "system_network_performance")
+            topic: Topic name (e.g., "system_network_performance" or tool name like "system_network_perfomance_metrics")
 
         Returns:
             List of tool case names
         """
         tool_cases = []
 
-        # Determine if this is a host or vm topic
-        host_topics = ["system_network_performance", "linux_network_stack"]
-        vm_topics = ["kvm_virt_network", "ovs_monitoring", "vm_network_performance"]
+        # Try to find tool cases in both host and vm paths
+        # First check host-server ebpf path
+        host_ebpf_path = os.path.join(self.host_server_path, "ebpf")
+        vm_ebpf_path = os.path.join(self.vm_server_path, "ebpf")
 
-        if topic in host_topics:
-            ebpf_path = os.path.join(self.host_server_path, "ebpf")
-        elif topic in vm_topics:
-            ebpf_path = os.path.join(self.vm_server_path, "ebpf")
-        else:
-            logger.warning(f"Unknown topic: {topic}")
-            return []
+        ebpf_path = None
 
-        if not os.path.exists(ebpf_path):
-            logger.warning(f"eBPF path not found: {ebpf_path}")
+        # Check host path first
+        if os.path.exists(host_ebpf_path):
+            for item in os.listdir(host_ebpf_path):
+                if item.startswith(topic + "_case_"):
+                    ebpf_path = host_ebpf_path
+                    break
+
+        # If not found in host, check vm path
+        if ebpf_path is None and os.path.exists(vm_ebpf_path):
+            for item in os.listdir(vm_ebpf_path):
+                if item.startswith(topic + "_case_"):
+                    ebpf_path = vm_ebpf_path
+                    break
+
+        if ebpf_path is None:
+            logger.warning(f"No tool cases found for topic: {topic}")
             return []
 
         # Find all directories matching the topic pattern
-        pattern = f"{topic}_case_*"
         for item in os.listdir(ebpf_path):
             item_path = os.path.join(ebpf_path, item)
             if os.path.isdir(item_path) and item.startswith(topic + "_case_"):
