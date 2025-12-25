@@ -1,0 +1,68 @@
+# Performance Test Analysis Configuration - Intel Environment
+# OS: openEuler, Kernel: 5.10, CPU: Intel
+
+# Data root directory (relative to this config file)
+data_root: "../measurement-results/1223-intel-510-oe"
+
+# Available iterations
+iterations:
+  - iteration_001
+  - iteration_002
+  - iteration_003
+  - iteration_004
+  - iteration_005
+
+# Selected iterations for analysis
+selected_iterations: all
+
+# Topics configuration - must match actual tool name prefixes in ebpf directories
+topics:
+  host:
+    # System network performance tools
+    - system_network_perfomance_metrics
+    - system_network_latency_details
+    - system_network_latency_summary
+    - system_network_icmp_rtt
+    # Linux network stack tools
+    - eth_drop
+    - kernel_drop_stack_stats_summary_all
+    - qdisc_drop_trace
+    - trace_conntrack
+    - trace_ip_defrag
+  vm:
+    # OVS monitoring tools
+    - ovs_upcall_latency_summary
+    - ovs_userspace_megaflow
+    - ovs_kernel_module_drop_monitor
+    # KVM/virt network tools
+    - kvm_irqfd_stats_summary
+    - tun_ring_monitor
+    - tun_to_vhost_queue_stats_full_summary
+    - tun_to_vhost_queue_status_simple_summary
+    - vhost_buf_peek_stats
+    - vhost_eventfd_count
+    - vhost_queue_correlation_details
+    - vhost_queue_correlation_simple
+    # VM network performance tools
+    - vm_network_latency_details
+    - vm_network_latency_summary
+    - vm_network_performance_metrics
+
+# Output configuration
+output_dir: "./output"
+output_subdir: "1223-intel-510-oe"
+output_formats:
+  - csv
+  - markdown
+
+# Performance degradation thresholds (for highlighting)
+thresholds:
+  latency_degradation_percent: 5.0
+  throughput_degradation_percent: 5.0
+  pps_degradation_percent: 5.0
+
+# Logging configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "./analysis_intel.log"

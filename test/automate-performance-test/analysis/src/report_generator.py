@@ -197,14 +197,14 @@ class ReportGenerator:
         output_path = os.path.join(self.output_dir, f"{topic}_resources_{iteration}.csv")
 
         # Create hierarchical headers
-        # Row 1: Main categories (each row will have its own time ranges)
+        # Row 1: Main categories
         header_row1 = [
             "Tool Case",
             "Command",
-            "PPS Single", "", "", "",  # Time Range, CPU Avg, CPU Max, Mem Max
-            "PPS Multi", "", "", "",
-            "TP Single", "", "", "",
-            "TP Multi", "", "", "",
+            "PPS Single", "", "",  # CPU Avg, CPU Max, Mem Max
+            "PPS Multi", "", "",
+            "TP Single", "", "",
+            "TP Multi", "", "",
             "Full Cycle", "", "", "", "",
             "Log Size", ""
         ]
@@ -213,10 +213,10 @@ class ReportGenerator:
         header_row2 = [
             "",  # Tool Case
             "",  # Command
-            "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # PPS Single
-            "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # PPS Multi
-            "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Single
-            "Time Range", "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Multi
+            "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # PPS Single
+            "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # PPS Multi
+            "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Single
+            "CPU Avg (%)", "CPU Max (%)", "Mem Max (KB)",  # TP Multi
             "Max RSS (KB)", "Max VSZ (KB)", "CPU Avg (%)", "CPU Max (%)", "Total Samples",  # Full Cycle
             "Size (Bytes)", "Size (Human)"  # Log Size
         ]
@@ -462,7 +462,7 @@ class ReportGenerator:
         ]
 
     def _extract_resources_row(self, result: Dict) -> List:
-        """Extract resources data row with time ranges for each test type"""
+        """Extract resources data row for each test type"""
         def safe_get(d, *keys, default="N/A"):
             for key in keys:
                 if isinstance(d, dict) and key in d:
@@ -471,64 +471,29 @@ class ReportGenerator:
                     return default
             return d if d is not None else default
 
-        def format_time_range(start_time, end_time):
-            """Format time range in human-readable format"""
-            if start_time and start_time != "N/A" and end_time and end_time != "N/A":
-                return f"{start_time} ~ {end_time}"
-            return "N/A"
-
-        metadata = result.get("metadata", {})
         resources = result.get("resources", {})
         logs = result.get("logs", {})
-        perf = result.get("performance", {})
 
         time_range_stats = safe_get(resources, "time_range_stats", default={})
         full_cycle = safe_get(resources, "full_cycle", default={})
         log_size = safe_get(logs, "log_size", default={})
 
-        # Extract time ranges from client performance data
-        client = perf.get("client", {})
-
-        # PPS Single time range
-        pps_single_start = safe_get(client, "pps", "single", "start_time")
-        pps_single_end = safe_get(client, "pps", "single", "end_time")
-        pps_single_time = format_time_range(pps_single_start, pps_single_end)
-
-        # PPS Multi time range
-        pps_multi_start = safe_get(client, "pps", "multi", "start_time")
-        pps_multi_end = safe_get(client, "pps", "multi", "end_time")
-        pps_multi_time = format_time_range(pps_multi_start, pps_multi_end)
-
-        # TP Single time range
-        tp_single_start = safe_get(client, "throughput", "single", "start_time")
-        tp_single_end = safe_get(client, "throughput", "single", "end_time")
-        tp_single_time = format_time_range(tp_single_start, tp_single_end)
-
-        # TP Multi time range
-        tp_multi_start = safe_get(client, "throughput", "multi", "start_time")
-        tp_multi_end = safe_get(client, "throughput", "multi", "end_time")
-        tp_multi_time = format_time_range(tp_multi_start, tp_multi_end)
-
         return [
             result.get("tool_case", "N/A"),
             self._get_command(result),
-            # PPS Single: Time Range + metrics
-            pps_single_time,
+            # PPS Single metrics
             safe_get(time_range_stats, "pps_single", "cpu", "avg_percent"),
             safe_get(time_range_stats, "pps_single", "cpu", "max_percent"),
             safe_get(time_range_stats, "pps_single", "memory", "max_rss_kb"),
-            # PPS Multi: Time Range + metrics
-            pps_multi_time,
+            # PPS Multi metrics
             safe_get(time_range_stats, "pps_multi", "cpu", "avg_percent"),
             safe_get(time_range_stats, "pps_multi", "cpu", "max_percent"),
             safe_get(time_range_stats, "pps_multi", "memory", "max_rss_kb"),
-            # TP Single: Time Range + metrics
-            tp_single_time,
+            # TP Single metrics
             safe_get(time_range_stats, "throughput_single", "cpu", "avg_percent"),
             safe_get(time_range_stats, "throughput_single", "cpu", "max_percent"),
             safe_get(time_range_stats, "throughput_single", "memory", "max_rss_kb"),
-            # TP Multi: Time Range + metrics
-            tp_multi_time,
+            # TP Multi metrics
             safe_get(time_range_stats, "throughput_multi", "cpu", "avg_percent"),
             safe_get(time_range_stats, "throughput_multi", "cpu", "max_percent"),
             safe_get(time_range_stats, "throughput_multi", "memory", "max_rss_kb"),

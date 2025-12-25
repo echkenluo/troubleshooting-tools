@@ -22,7 +22,9 @@ class IterationAggregator:
         self.output_base_dir = output_base_dir
         self.output_subdir = output_subdir
         self.iteration_base = os.path.join(output_base_dir, output_subdir)
-        self.summary_dir = os.path.join(output_base_dir, output_subdir, "summary")
+        self.aggregated_base = os.path.join(output_base_dir, output_subdir, "aggregated")
+        self.summary_dir = os.path.join(self.aggregated_base, "summary")  # For summary_avg files
+        self.details_dir = os.path.join(self.aggregated_base, "details")  # For other avg files
 
     def aggregate_all(self, iterations: List[str], topics: List[str]):
         """Aggregate all reports from multiple iterations
@@ -41,32 +43,36 @@ class IterationAggregator:
         logger.info("=" * 60)
 
         os.makedirs(self.summary_dir, exist_ok=True)
+        os.makedirs(self.details_dir, exist_ok=True)
 
         # Define report types to aggregate
-        report_types = [
-            "latency",
-            "throughput",
-            "pps",
-            "resources",
-            "summary"
-        ]
+        detail_report_types = ["latency", "throughput", "pps", "resources"]
+        summary_report_type = "summary"
 
         # Aggregate each topic
         for topic in topics:
             logger.info(f"Aggregating topic: {topic}")
 
-            for report_type in report_types:
-                self._aggregate_report(iterations, topic, report_type)
+            # Aggregate detail reports
+            for report_type in detail_report_types:
+                self._aggregate_report(iterations, topic, report_type, self.details_dir)
 
-        logger.info(f"Aggregated reports saved to: {self.summary_dir}")
+            # Aggregate summary report
+            self._aggregate_report(iterations, topic, summary_report_type, self.summary_dir)
 
-    def _aggregate_report(self, iterations: List[str], topic: str, report_type: str):
+        # Generate consolidated summary table
+        self._generate_consolidated_summary(topics)
+
+        logger.info(f"Aggregated reports saved to: {self.aggregated_base}")
+
+    def _aggregate_report(self, iterations: List[str], topic: str, report_type: str, output_dir: str):
         """Aggregate a specific report type across iterations
 
         Args:
             iterations: List of iteration names
             topic: Topic name
             report_type: Report type (latency, throughput, pps, resources, summary)
+            output_dir: Output directory for the aggregated report
         """
         # Collect report files from all iterations
         report_files = []
@@ -103,7 +109,7 @@ class IterationAggregator:
         aggregated = self._compute_average(reports_data, report_type)
 
         # Write aggregated report
-        output_file = os.path.join(self.summary_dir, f"{topic}_{report_type}_avg.csv")
+        output_file = os.path.join(output_dir, f"{topic}_{report_type}_avg.csv")
         self._write_csv_report(output_file, aggregated)
         logger.info(f"  Generated: {os.path.basename(output_file)}")
 
@@ -231,9 +237,16 @@ class IterationAggregator:
                 else:
                     averaged.append(f"{int(round(avg))}")
             else:
-                # No numeric values, use first row's value
-                if col_idx < len(rows[0]):
-                    averaged.append(rows[0][col_idx])
+                # No numeric values - check if it's a time range or other non-aggregatable data
+                first_val = rows[0][col_idx] if col_idx < len(rows[0]) else ""
+                # Time ranges contain "~" and shouldn't be aggregated
+                if first_val and "~" in first_val:
+                    averaged.append("N/A")
+                # Human-readable sizes like "42.0MB" shouldn't be aggregated
+                elif first_val and any(first_val.endswith(s) for s in ["MB", "KB", "GB", "B"]):
+                    averaged.append("N/A")
+                elif first_val:
+                    averaged.append(first_val)
                 else:
                     averaged.append("N/A")
 
@@ -260,3 +273,46 @@ class IterationAggregator:
             logger.debug(f"Wrote aggregated report: {file_path}")
         except Exception as e:
             logger.error(f"Failed to write {file_path}: {e}")
+
+    def _generate_consolidated_summary(self, topics: List[str]):
+        """Generate consolidated summary table combining all tools' summary_avg
+
+        Args:
+            topics: List of topics to consolidate
+        """
+        all_rows = []
+        headers = None
+
+        for topic in topics:
+            summary_file = os.path.join(self.summary_dir, f"{topic}_summary_avg.csv")
+            if not os.path.exists(summary_file):
+                continue
+
+            data = self._read_csv_report(summary_file)
+            if not data:
+                continue
+
+            # Use first file's headers
+            if headers is None:
+                headers = data["headers"]
+
+            # Add rows with topic prefix
+            for row in data["data"]:
+                if row:
+                    all_rows.append(row)
+
+        if not all_rows or headers is None:
+            logger.warning("No summary data to consolidate")
+            return
+
+        # Write consolidated summary
+        output_file = os.path.join(self.aggregated_base, "all_tools_summary.csv")
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                for header_row in headers:
+                    writer.writerow(header_row)
+                writer.writerows(all_rows)
+            logger.info(f"Generated consolidated summary: {os.path.basename(output_file)}")
+        except Exception as e:
+            logger.error(f"Failed to write consolidated summary: {e}")

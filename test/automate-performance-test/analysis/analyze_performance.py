@@ -501,7 +501,7 @@ def main():
         try:
             aggregator = IterationAggregator(base_output, output_subdir)
             aggregator.aggregate_all(iterations_to_process, topics)
-            logger.info(f"  - summary/ (aggregated from {len(iterations_to_process)} iterations)")
+            logger.info(f"  - aggregated/ (from {len(iterations_to_process)} iterations)")
         except Exception as e:
             logger.error(f"Failed to aggregate iterations: {e}", exc_info=True)
 
