@@ -488,25 +488,10 @@ def print_ovs_drop_event(cpu, data, size):
             
             #print("===============================================")
     else:
-        error_code = abs(event.kernel_stack_id)
-        error_msg = "Unknown error"
-        if error_code == 1:
-            error_msg = "EFAULT: Bad address"
-        elif error_code == 2:
-            error_msg = "ENOENT: No such entry"
-        elif error_code == 12:
-            error_msg = "ENOMEM: Out of memory"
-        elif error_code == 22:
-            error_msg = "EINVAL: Invalid argument"
-        elif error_code == 14:
-            error_msg = "BPF_MAX_STACK_DEPTH exceeded"
-        elif error_code == 16:
-            error_msg = "Resource temporarily unavailable"
-        elif error_code == 524:
-            error_msg = "Uprobe not found"
-        
-        print("  Failed to capture stack trace (Error: %s, code: %d)" % 
-              (error_msg, error_code))
+        # Stack trace capture failed (e.g., BPF_MAX_STACK_DEPTH exceeded)
+        # Without stack trace, we cannot verify if this is a direct
+        # clone_execute -> kfree_skb call, so silently skip this event
+        return
     
     #print("===============================================")
 

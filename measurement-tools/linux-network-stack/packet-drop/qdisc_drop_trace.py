@@ -504,15 +504,29 @@ if interface_filter:
             target_name.name = str(interface_filter).encode('utf-8')
     interface_map[0] = target_name
 
-# Attach probes
-b.attach_kprobe(event="__dev_queue_xmit", fn_name="trace_dev_queue_xmit_entry")
-b.attach_kretprobe(event="__dev_queue_xmit", fn_name="trace_dev_queue_xmit_return")
-b.attach_kprobe(event="dev_hard_start_xmit", fn_name="trace_dev_hard_start_xmit_entry")
-b.attach_kretprobe(event="dev_hard_start_xmit", fn_name="trace_dev_hard_start_xmit_return")
-b.attach_kprobe(event="erspan_xmit", fn_name="trace_erspan_xmit_entry")
-b.attach_kretprobe(event="erspan_xmit", fn_name="trace_erspan_xmit_return")
-b.attach_kprobe(event="fq_codel_enqueue", fn_name="trace_fq_codel_enqueue_entry")
-b.attach_kretprobe(event="fq_codel_enqueue", fn_name="trace_fq_codel_enqueue_return")
+# Attach probes with optional function support
+attached_probes = []
+
+def attach_probe_pair(event, entry_fn, return_fn):
+    """Attach kprobe/kretprobe pair, return True if successful"""
+    try:
+        b.attach_kprobe(event=event, fn_name=entry_fn)
+        b.attach_kretprobe(event=event, fn_name=return_fn)
+        attached_probes.append(event)
+        return True
+    except Exception as e:
+        print("Warning: {} not available on this kernel, skipping".format(event))
+        return False
+
+# Core probes (should exist on all kernels)
+attach_probe_pair("__dev_queue_xmit", "trace_dev_queue_xmit_entry", "trace_dev_queue_xmit_return")
+attach_probe_pair("dev_hard_start_xmit", "trace_dev_hard_start_xmit_entry", "trace_dev_hard_start_xmit_return")
+
+# Optional probes (may not exist on all kernels)
+erspan_attached = attach_probe_pair("erspan_xmit", "trace_erspan_xmit_entry", "trace_erspan_xmit_return")
+fq_codel_attached = attach_probe_pair("fq_codel_enqueue", "trace_fq_codel_enqueue_entry", "trace_fq_codel_enqueue_return")
+
+print("Attached probes: {}".format(", ".join(attached_probes)))
 
 # Define ctypes structures
 class DevXmitEvent(ct.Structure):
@@ -681,8 +695,10 @@ def print_fq_codel_event(cpu, data, size):
 # Register callbacks
 b["dev_xmit_events"].open_perf_buffer(print_dev_xmit_event)
 b["dev_hard_start_xmit_events"].open_perf_buffer(print_dev_hard_start_xmit_event)
-b["erspan_xmit_events"].open_perf_buffer(print_erspan_xmit_event)
-b["fq_codel_events"].open_perf_buffer(print_fq_codel_event)
+if erspan_attached:
+    b["erspan_xmit_events"].open_perf_buffer(print_erspan_xmit_event)
+if fq_codel_attached:
+    b["fq_codel_events"].open_perf_buffer(print_fq_codel_event)
 
 # Previous statistics for delta calculation
 prev_dev_xmit_stats = {}
@@ -750,49 +766,51 @@ def print_statistics():
     
     prev_dev_hard_start_xmit_stats = current_dev_hard_start_xmit
     
-    # Print erspan_xmit statistics
-    print("erspan_xmit return codes:")
-    erspan_xmit_hist = b.get_table("erspan_xmit_hist")
-    current_erspan_xmit = {}
-    
-    for k, v in erspan_xmit_hist.items():
-        current_erspan_xmit[k.value] = v.value
-        prev_count = prev_erspan_xmit_stats.get(k.value, 0)
-        delta = v.value - prev_count
-        
-        ret_meaning = {
-            0: "NET_XMIT_SUCCESS", 
-            1: "NET_XMIT_DROP", 
-            2: "NET_XMIT_CN",
-            3: "NET_XMIT_POLICED"
-        }.get(k.value, "UNKNOWN")
-        
-        if delta > 0:
-            print("  {}: {} ({})".format(k.value, delta, ret_meaning))
-    
-    prev_erspan_xmit_stats = current_erspan_xmit
-    
-    # Print fq_codel_enqueue statistics  
-    print("fq_codel_enqueue return codes:")
-    fq_codel_hist = b.get_table("fq_codel_hist")
-    current_fq_codel = {}
-    
-    for k, v in fq_codel_hist.items():
-        current_fq_codel[k.value] = v.value
-        prev_count = prev_fq_codel_stats.get(k.value, 0)
-        delta = v.value - prev_count
-        
-        ret_meaning = {
-            0: "NET_XMIT_SUCCESS", 
-            1: "NET_XMIT_DROP", 
-            2: "NET_XMIT_CN",
-            3: "NET_XMIT_POLICED"
-        }.get(k.value, "UNKNOWN")
-        
-        if delta > 0:
-            print("  {}: {} ({})".format(k.value, delta, ret_meaning))
-    
-    prev_fq_codel_stats = current_fq_codel
+    # Print erspan_xmit statistics (only if probe attached)
+    if erspan_attached:
+        print("erspan_xmit return codes:")
+        erspan_xmit_hist = b.get_table("erspan_xmit_hist")
+        current_erspan_xmit = {}
+
+        for k, v in erspan_xmit_hist.items():
+            current_erspan_xmit[k.value] = v.value
+            prev_count = prev_erspan_xmit_stats.get(k.value, 0)
+            delta = v.value - prev_count
+
+            ret_meaning = {
+                0: "NET_XMIT_SUCCESS",
+                1: "NET_XMIT_DROP",
+                2: "NET_XMIT_CN",
+                3: "NET_XMIT_POLICED"
+            }.get(k.value, "UNKNOWN")
+
+            if delta > 0:
+                print("  {}: {} ({})".format(k.value, delta, ret_meaning))
+
+        prev_erspan_xmit_stats = current_erspan_xmit
+
+    # Print fq_codel_enqueue statistics (only if probe attached)
+    if fq_codel_attached:
+        print("fq_codel_enqueue return codes:")
+        fq_codel_hist = b.get_table("fq_codel_hist")
+        current_fq_codel = {}
+
+        for k, v in fq_codel_hist.items():
+            current_fq_codel[k.value] = v.value
+            prev_count = prev_fq_codel_stats.get(k.value, 0)
+            delta = v.value - prev_count
+
+            ret_meaning = {
+                0: "NET_XMIT_SUCCESS",
+                1: "NET_XMIT_DROP",
+                2: "NET_XMIT_CN",
+                3: "NET_XMIT_POLICED"
+            }.get(k.value, "UNKNOWN")
+
+            if delta > 0:
+                print("  {}: {} ({})".format(k.value, delta, ret_meaning))
+
+        prev_fq_codel_stats = current_fq_codel
     
     # Print entry count statistics
     print("\nEntry count statistics (filtered entries):")
@@ -823,31 +841,33 @@ def print_statistics():
     if dev_hard_start_xmit_entry_total > 0:
         print("  dev_hard_start_xmit entries: {}".format(dev_hard_start_xmit_entry_total))
     
-    # erspan_xmit entries
-    erspan_xmit_entry_hist = b.get_table("erspan_xmit_entry_hist")
-    current_erspan_xmit_entry = {}
-    erspan_xmit_entry_total = 0
-    for k, v in erspan_xmit_entry_hist.items():
-        current_erspan_xmit_entry[k.value] = v.value
-        prev_count = prev_erspan_xmit_entry_stats.get(k.value, 0)
-        delta = v.value - prev_count
-        erspan_xmit_entry_total += delta
-    prev_erspan_xmit_entry_stats = current_erspan_xmit_entry
-    if erspan_xmit_entry_total > 0:
-        print("  erspan_xmit entries: {}".format(erspan_xmit_entry_total))
-    
-    # fq_codel_enqueue entries
-    fq_codel_entry_hist = b.get_table("fq_codel_entry_hist")
-    current_fq_codel_entry = {}
-    fq_codel_entry_total = 0
-    for k, v in fq_codel_entry_hist.items():
-        current_fq_codel_entry[k.value] = v.value
-        prev_count = prev_fq_codel_entry_stats.get(k.value, 0)
-        delta = v.value - prev_count
-        fq_codel_entry_total += delta
-    prev_fq_codel_entry_stats = current_fq_codel_entry
-    if fq_codel_entry_total > 0:
-        print("  fq_codel_enqueue entries: {}".format(fq_codel_entry_total))
+    # erspan_xmit entries (only if probe attached)
+    if erspan_attached:
+        erspan_xmit_entry_hist = b.get_table("erspan_xmit_entry_hist")
+        current_erspan_xmit_entry = {}
+        erspan_xmit_entry_total = 0
+        for k, v in erspan_xmit_entry_hist.items():
+            current_erspan_xmit_entry[k.value] = v.value
+            prev_count = prev_erspan_xmit_entry_stats.get(k.value, 0)
+            delta = v.value - prev_count
+            erspan_xmit_entry_total += delta
+        prev_erspan_xmit_entry_stats = current_erspan_xmit_entry
+        if erspan_xmit_entry_total > 0:
+            print("  erspan_xmit entries: {}".format(erspan_xmit_entry_total))
+
+    # fq_codel_enqueue entries (only if probe attached)
+    if fq_codel_attached:
+        fq_codel_entry_hist = b.get_table("fq_codel_entry_hist")
+        current_fq_codel_entry = {}
+        fq_codel_entry_total = 0
+        for k, v in fq_codel_entry_hist.items():
+            current_fq_codel_entry[k.value] = v.value
+            prev_count = prev_fq_codel_entry_stats.get(k.value, 0)
+            delta = v.value - prev_count
+            fq_codel_entry_total += delta
+        prev_fq_codel_entry_stats = current_fq_codel_entry
+        if fq_codel_entry_total > 0:
+            print("  fq_codel_enqueue entries: {}".format(fq_codel_entry_total))
     
     print("=" * 70)
 

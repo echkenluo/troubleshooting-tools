@@ -45,9 +45,43 @@ import os
 import sys
 import datetime
 import fcntl
+import re
 
 # Global configuration
 direction_filter = 0  # 0=both, 1=system_tx(local_to_uplink), 2=system_rx(uplink_to_local)
+
+def find_kernel_function(base_name):
+    """
+    Find actual kernel function name, handling GCC clone suffixes.
+    GCC may generate optimized clones with suffixes like:
+      .isra.N     - Inter-procedural Scalar Replacement of Aggregates
+      .constprop.N - Constant Propagation
+      .part.N     - Partial inlining
+    Returns the actual symbol name or None if not found.
+    """
+    pattern = re.compile(
+        r'^[0-9a-f]+\s+[tT]\s+(' + re.escape(base_name) +
+        r'(?:\.(?:isra|constprop|part)\.\d+)*)(?:\s+\[\w+\])?$'
+    )
+
+    candidates = []
+    try:
+        with open('/proc/kallsyms', 'r') as f:
+            for line in f:
+                match = pattern.match(line.strip())
+                if match:
+                    candidates.append(match.group(1))
+    except Exception:
+        return None
+
+    if not candidates:
+        return None
+
+    # Prefer exact match, then shortest suffix
+    if base_name in candidates:
+        return base_name
+
+    return min(candidates, key=len)
 
 # BPF Program
 bpf_text = """
@@ -84,7 +118,7 @@ bpf_text = """
 // REMOVED: STG_SOCK_SEND and STG_TCP_UDP_SEND - socket and protocol layer probes removed
 #define STG_SOCK_SEND_SYSCALL 21  // sys_enter_sendto/sys_enter_send - syscall entry
 #define STG_IP_QUEUE_XMIT    1   // __ip_queue_xmit - FIRST STAGE for TCP TX
-// REMOVED: STG_IP_OUTPUT - not needed, TCP uses __ip_queue_xmit, UDP/ICMP use ip_send_skb
+#define STG_IP_OUTPUT        2   // ip_output - FIRST STAGE for ICMP TX
 #define STG_OVS_TX           3   // ovs_vport_receive (internal port)
 #define STG_FLOW_EXTRACT_TX  4   // ovs_ct_update_key (flow extract phase)
 #define STG_CT_TX            5   // nf_conntrack_in
@@ -104,7 +138,7 @@ bpf_text = """
 #define STG_IP_RCV           18  // ip_rcv - IP receive
 #define STG_TCP_UDP_RCV      19  // tcp_v4_rcv/udp_rcv - protocol layer recv - LAST POINT for RX
 #define STG_ICMP_RCV         25  // icmp_rcv - ICMP receive - LAST POINT for ICMP RX
-#define STG_IP_SEND_SKB      26  // ip_send_skb - IP send - FIRST POINT for ICMP TX
+#define STG_IP_SEND_SKB      26  // ip_send_skb - FIRST POINT for UDP TX
 // REMOVED: #define STG_SOCK_QUEUE       23  // sock_queue_rcv_skb - socket buffer queueing  
 // REMOVED: #define STG_SOCK_RECV_SYSCALL 24 // sys_enter_recvfrom/sys_enter_recv - syscall entry
 // REMOVED: #define STG_SOCK_RECV        20  // socket receive complete - LAST POINT
@@ -305,7 +339,7 @@ static __always_inline int get_transport_header(struct sk_buff *skb, void *hdr, 
 }
 
 static __always_inline int parse_packet_key(
-    struct sk_buff *skb, 
+    struct sk_buff *skb,
     struct packet_key_t *key,
     u8 direction  // 1=system_tx, 2=system_rx
 ) {
@@ -313,12 +347,12 @@ static __always_inline int parse_packet_key(
     if (get_ip_header(skb, &ip) != 0) {
         return 0;
     }
-    
+
     // Apply filters first
     if (PROTOCOL_FILTER != 0 && ip.protocol != PROTOCOL_FILTER) {
         return 0;
     }
-    
+
     // Direction-specific IP filtering
     if (direction == 1) { // system_tx: packets from system (source should be system IP)
         if (SRC_IP_FILTER != 0 && ip.saddr != SRC_IP_FILTER) {
@@ -343,22 +377,22 @@ static __always_inline int parse_packet_key(
             return 0;
         }
     }
-    
+
     // Set canonical source/destination for consistent packet identification
     key->sip = ip.saddr;
     key->dip = ip.daddr;
     key->proto = ip.protocol;
-    
+
     // Parse transport layer based on protocol
     switch (ip.protocol) {
         case IPPROTO_TCP: {
             struct tcphdr tcp;
             if (get_transport_header(skb, &tcp, sizeof(tcp)) != 0) return 0;
-            
+
             key->tcp.source = tcp.source;
             key->tcp.dest = tcp.dest;
             key->tcp.seq = tcp.seq;
-            
+
             if (SRC_PORT_FILTER != 0 && key->tcp.source != htons(SRC_PORT_FILTER) && key->tcp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -369,14 +403,14 @@ static __always_inline int parse_packet_key(
         }
         case IPPROTO_UDP: {
             key->udp.id = ip.id;  // Use IP ID as main identifier
-            
+
             struct udphdr udp;
             if (get_transport_header(skb, &udp, sizeof(udp)) == 0) {
                 key->udp.source = udp.source;
                 key->udp.dest = udp.dest;
                 key->udp.len = udp.len;
             }
-            
+
             if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -387,8 +421,10 @@ static __always_inline int parse_packet_key(
         }
         case IPPROTO_ICMP: {
             struct icmphdr icmp;
-            if (get_transport_header(skb, &icmp, sizeof(icmp)) != 0) return 0;
-            
+            if (get_transport_header(skb, &icmp, sizeof(icmp)) != 0) {
+                return 0;
+            }
+
             key->icmp.type = icmp.type;
             key->icmp.code = icmp.code;
             key->icmp.id = icmp.un.echo.id;
@@ -398,7 +434,7 @@ static __always_inline int parse_packet_key(
         default:
             return 0;
     }
-    
+
     return 1;
 }
 
@@ -475,25 +511,25 @@ static __always_inline int parse_packet_key_tcp_early(
 
 // Main event handling function - tracks packets through all stages
 static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u8 stage_id, u8 direction) {
-    
     struct packet_key_t key = {};
     u64 current_ts = bpf_ktime_get_ns();
-    
+
     // Parse packet key for identification
     if (!parse_packet_key(skb, &key, direction)) {
         return;
     }
-    
+
     // Check if this is the first stage for this direction
     bool is_first_stage = false;
     if ((direction == 1 && stage_id == STG_IP_QUEUE_XMIT) || // TCP TX path starts with __ip_queue_xmit
-        (direction == 1 && stage_id == STG_IP_SEND_SKB) ||   // UDP/ICMP TX path starts with ip_send_skb
+        (direction == 1 && stage_id == STG_IP_OUTPUT) ||      // ICMP TX path starts with ip_output
+        (direction == 1 && stage_id == STG_IP_SEND_SKB) ||    // UDP TX path starts with ip_send_skb
         (direction == 2 && stage_id == STG_PHY_RX)) {        // system RX path starts with physical RX
         is_first_stage = true;
     }
-    
+
     struct flow_data_t *flow_ptr;
-    
+
     if (is_first_stage) {
         // Initialize new flow tracking using per-cpu map
         flow_sessions.delete(&key);  // Clean any old entries
@@ -543,7 +579,7 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         // Look up existing flow
         flow_ptr = flow_sessions.lookup(&key);
     }
-    
+
     if (!flow_ptr) {
         return;
     }
@@ -571,12 +607,12 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         
         stage->valid = 1;
         flow_ptr->stage_count++;
-        
+
         // Backward compatibility - still fill old fields
         flow_ptr->ts[stage_id] = current_ts;
         flow_ptr->skb_ptr[stage_id] = (u64)skb;
     }
-    
+
     // Handle special stages
     if (stage_id == STG_PHY_QDISC_ENQ) {
         flow_ptr->qdisc_enq_time = current_ts;
@@ -594,14 +630,14 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
     
     flow_sessions.update(&key, flow_ptr);
     
-    // Check if this is the last stage 
+    // Check if this is the last stage
     bool is_last_stage = false;
     if ((direction == 1 && stage_id == STG_PHY_TX) ||        // system TX path ends at physical TX
-        (direction == 2 && stage_id == STG_TCP_UDP_RCV) ||   // TCP/UDP RX ends at protocol layer recv  
+        (direction == 2 && stage_id == STG_TCP_UDP_RCV) ||   // TCP/UDP RX ends at protocol layer recv
         (direction == 2 && stage_id == STG_ICMP_RCV)) {      // ICMP RX ends at icmp_rcv
         is_last_stage = true;
     }
-    
+
     // Only submit event at the last stage
     if (is_last_stage) {
         // Check latency threshold before submitting
@@ -651,7 +687,6 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         // Clean up flow tracking
         flow_sessions.delete(&key);
     }
-    
 }
 
 // Socket layer helper for packet tracking without skb - WITH DIRECTION-AWARE FILTERING
@@ -883,11 +918,12 @@ int kprobe__nf_conntrack_in(struct pt_regs *ctx, struct net *net, u_int8_t pf, u
     return 0;
 }
 
-int kprobe__ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
+// Manual attach - function name varies by kernel/compiler optimization
+int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
     if (!skb) return 0;
-    
+
     // Distinguish between flow extract and conntrack action calls
-    // post_ct=false indicates flow extract phase (ovs_ct_fill_key)  
+    // post_ct=false indicates flow extract phase (ovs_ct_fill_key)
     // post_ct=true indicates conntrack action phase (__ovs_ct_lookup)
     if (post_ct) {
         // Conntrack action phase
@@ -906,7 +942,7 @@ int kprobe__ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *in
             handle_stage_event(ctx, skb, STG_FLOW_EXTRACT_RX, 2);
         }
     }
-    
+
     return 0;
 }
 
@@ -933,12 +969,14 @@ RAW_TRACEPOINT_PROBE(qdisc_dequeue) {
 
 int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
-        if (DIRECTION_FILTER == 2) return 0;  // Skip if system_rx only
+        if (DIRECTION_FILTER == 2) {
+            return 0;  // Skip if system_rx only
+        }
         handle_stage_event(ctx, skb, STG_PHY_TX, 1);  // Last stage for system_tx
     }
-    
+
     return 0;
 }
 
@@ -1048,17 +1086,34 @@ int kprobe__icmp_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
     return 0;
 }
 
-// ip_send_skb - IP layer send (ICMP TX entry point)
-int kprobe__ip_send_skb(struct pt_regs *ctx, struct net *net, struct sk_buff *skb) {
+// ip_send_skb - UDP TX entry point
+// Manual attach - function signature varies by kernel version
+int trace_ip_send_skb(struct pt_regs *ctx, struct net *net, struct sk_buff *skb) {
     if (!skb) {
         return 0;
     }
-    
+
     if (DIRECTION_FILTER == 2) {
         return 0;  // Skip if system_rx only
     }
-    
-    handle_stage_event(ctx, skb, STG_IP_SEND_SKB, 1);  // FIRST STAGE for ICMP TX
+
+    handle_stage_event(ctx, skb, STG_IP_SEND_SKB, 1);  // FIRST STAGE for UDP TX
+    return 0;
+}
+
+// ip_output - IP output (ICMP TX entry point)
+// ICMP echo reply on 5.10+ kernel uses this path
+// Manual attach - function signature varies by kernel version
+int trace_ip_output(struct pt_regs *ctx, struct net *net, struct sock *sk, struct sk_buff *skb) {
+    if (!skb) {
+        return 0;
+    }
+
+    if (DIRECTION_FILTER == 2) {
+        return 0;  // Skip if system_rx only
+    }
+
+    handle_stage_event(ctx, skb, STG_IP_OUTPUT, 1);  // FIRST STAGE for ICMP TX
     return 0;
 }
 
@@ -1070,7 +1125,7 @@ int kprobe__ip_send_skb(struct pt_regs *ctx, struct net *net, struct sk_buff *sk
 
 // TX direction protocol layer probes - TCP transmit starts here
 // REMOVED: __tcp_transmit_skb and udp_sendmsg probes - socket/protocol layer probes removed
-// TX direction now starts at __ip_queue_xmit (TCP) or ip_send_skb (UDP/ICMP)
+// TX direction starts at __ip_queue_xmit (TCP), ip_output (ICMP), or ip_send_skb (UDP)
 """
 
 # Constants  
@@ -1174,11 +1229,10 @@ def format_ip(addr):
 def get_stage_name(stage_id):
     """Get human-readable stage name"""
     stage_names = {
-        # 系统 TX 路径（Local→Uplink，系统发送到外部） - EXTENDED
-        21: "SOCK_SEND_SYSCALL",  # New: syscall entry
-        # REMOVED: 1: "SOCK_SEND" and 22: "TCP_UDP_SEND" - socket and protocol layer probes removed
+        # TX path (Local->Uplink)
+        21: "SOCK_SEND_SYSCALL",  # syscall entry
         1: "IP_QUEUE_XMIT",       # TCP first stage: __ip_queue_xmit
-        # REMOVED: 2: "IP_OUTPUT" - TCP uses __ip_queue_xmit, UDP/ICMP use ip_send_skb
+        2: "IP_OUTPUT",           # ICMP first stage: ip_output
         3: "OVS_TX",
         4: "FLOW_EXTRACT_TX", 
         5: "CT_TX",
@@ -1198,7 +1252,7 @@ def get_stage_name(stage_id):
         18: "IP_RCV",             # IP layer processing
         19: "TCP_UDP_RCV",        # Protocol layer recv - END OF TCP/UDP RX PATH
         25: "ICMP_RCV",           # ICMP receive - END OF ICMP RX PATH
-        26: "IP_SEND_SKB",        # IP send - START OF ICMP TX PATH
+        26: "IP_SEND_SKB",        # ip_send_skb - START OF UDP TX PATH
         # REMOVED: 23: "SOCK_QUEUE" - socket buffer queueing probe removed
         24: "SOCK_RECV_SYSCALL",  # New: syscall entry  
         20: "SOCK_RECV"           # End of RX path
@@ -1462,6 +1516,47 @@ Examples:
         print("\nActual format string substitution:")
         print("Parameters passed: %d arguments" % len([src_ip_hex, dst_ip_hex, src_port, dst_port, protocol_filter, internal_ifindex, phy_ifindex1, phy_ifindex2, direction_filter, latency_threshold_ns]))
         sys.exit(1)
+
+    # Manual attachment for ip_send_skb (UDP TX first stage)
+    ip_send_skb_func = find_kernel_function("ip_send_skb")
+    if ip_send_skb_func:
+        try:
+            b.attach_kprobe(event=ip_send_skb_func, fn_name="trace_ip_send_skb")
+            print("Attached kprobe to %s" % ip_send_skb_func)
+        except Exception as e:
+            print("Warning: Could not attach to %s: %s" % (ip_send_skb_func, e))
+            print("         UDP TX first stage will be disabled")
+    else:
+        print("Warning: ip_send_skb not found in kallsyms")
+        print("         UDP TX first stage will be disabled")
+
+    # Manual attachment for ip_output (ICMP TX first stage)
+    # ICMP echo reply on 5.10+ kernel uses ip_output path
+    ip_output_func = find_kernel_function("ip_output")
+    if ip_output_func:
+        try:
+            b.attach_kprobe(event=ip_output_func, fn_name="trace_ip_output")
+            print("Attached kprobe to %s" % ip_output_func)
+        except Exception as e:
+            print("Warning: Could not attach to %s: %s" % (ip_output_func, e))
+            print("         ICMP TX first stage will be disabled")
+    else:
+        print("Warning: ip_output not found in kallsyms")
+        print("         ICMP TX first stage will be disabled")
+
+    # Manual attachment for ovs_ct_update_key (function name varies by kernel/compiler)
+    # GCC may generate optimized clones: .isra.N, .constprop.N, .part.N
+    ovs_ct_func = find_kernel_function("ovs_ct_update_key")
+    if ovs_ct_func:
+        try:
+            b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
+            print("Attached kprobe to %s" % ovs_ct_func)
+        except Exception as e:
+            print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
+            print("         CT flow tracking will be disabled")
+    else:
+        print("Warning: ovs_ct_update_key not found in kallsyms")
+        print("         CT flow tracking will be disabled")
     
     b["events"].open_perf_buffer(print_event)
     
@@ -1471,7 +1566,7 @@ Examples:
     print("        System RX: PHY_RX -> SOCK_RECV")
     print("        Note: Internal port has NO qdisc (unlike physical interface)")
     print("")
-    
+
     try:
         while True:
             b.perf_buffer_poll()
