@@ -56,26 +56,103 @@ def parse_datetime(datetime_str: str) -> datetime:
     raise ValueError(f"Unrecognized datetime format: {datetime_str}")
 
 
-def datetime_to_epoch(datetime_str: str) -> int:
-    """Convert datetime string to Unix timestamp
+def datetime_to_epoch_with_reference(datetime_str: str, ref_datetime_str: str, ref_epoch: int) -> int:
+    """Convert datetime string to Unix timestamp using a reference time pair
 
-    IMPORTANT: Assumes the input datetime string is in UTC timezone.
-    The timing files from performance tests are recorded in UTC.
+    This function calculates epoch by computing the time difference between
+    the target datetime and a known reference datetime, then adding that
+    offset to the reference epoch. This approach:
+    1. Does NOT depend on analysis machine's timezone
+    2. Only uses executor's time information (both datetime strings from executor)
 
     Args:
-        datetime_str: Datetime string in UTC timezone
+        datetime_str: Target datetime string (from timing log)
+        ref_datetime_str: Reference datetime string (from resource monitor START_DATETIME)
+        ref_epoch: Reference epoch (from resource monitor START_EPOCH)
+
+    Returns:
+        Unix timestamp (seconds since epoch)
+
+    Example:
+        ref_datetime = "2025-12-27 14:11:11.821"
+        ref_epoch = 1766815871
+        target = "2025-12-27 14:11:22.305"
+        # Difference = 10.484 seconds
+        # Result = 1766815871 + 10 = 1766815881
+    """
+    # Parse both datetime strings (naive datetime objects)
+    target_dt = parse_datetime(datetime_str)
+    ref_dt = parse_datetime(ref_datetime_str)
+
+    # Calculate offset in seconds (can be negative if target is before reference)
+    offset_seconds = (target_dt - ref_dt).total_seconds()
+
+    # Apply offset to reference epoch
+    return int(ref_epoch + offset_seconds)
+
+
+def datetime_to_epoch(datetime_str: str, time_reference: Optional[Dict] = None) -> int:
+    """Convert datetime string to Unix timestamp
+
+    If time_reference is provided, uses reference-based calculation which
+    does not depend on analysis machine's timezone. Otherwise falls back
+    to local time interpretation (less accurate across timezones).
+
+    Args:
+        datetime_str: Datetime string
+        time_reference: Optional dict with 'ref_datetime' and 'ref_epoch' keys
+                       extracted from resource monitor log
 
     Returns:
         Unix timestamp (seconds since epoch)
     """
-    # Parse the datetime string (returns naive datetime object)
+    if time_reference and 'ref_datetime' in time_reference and 'ref_epoch' in time_reference:
+        return datetime_to_epoch_with_reference(
+            datetime_str,
+            time_reference['ref_datetime'],
+            time_reference['ref_epoch']
+        )
+
+    # Fallback: treat as local time (only works if analysis machine matches executor timezone)
     dt = parse_datetime(datetime_str)
+    return int(dt.timestamp())
 
-    # The timing files are recorded in UTC
-    # We need to treat the naive datetime as if it's in UTC
-    dt_with_tz = dt.replace(tzinfo=timezone.utc)
 
-    return int(dt_with_tz.timestamp())
+def extract_time_reference(resource_monitor_path: str) -> Optional[Dict]:
+    """Extract time reference from resource monitor log header
+
+    The resource monitor log contains START_DATETIME and START_EPOCH which
+    provide a reliable time reference from the executor. This reference can
+    be used to convert other datetime strings to epochs without depending
+    on the analysis machine's timezone.
+
+    Args:
+        resource_monitor_path: Path to resource monitor log file
+
+    Returns:
+        Dictionary with 'ref_datetime' and 'ref_epoch' keys, or None if not found
+    """
+    try:
+        with open(resource_monitor_path, 'r') as f:
+            for line in f:
+                if line.startswith('#') and 'START_DATETIME:' in line and 'START_EPOCH:' in line:
+                    # Extract START_DATETIME (full datetime string)
+                    dt_match = re.search(r'START_DATETIME:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)', line)
+                    # Extract START_EPOCH
+                    epoch_match = re.search(r'START_EPOCH:\s*(\d+)', line)
+
+                    if dt_match and epoch_match:
+                        return {
+                            'ref_datetime': dt_match.group(1),
+                            'ref_epoch': int(epoch_match.group(1))
+                        }
+                elif line.strip() and not line.startswith('#') and not line.startswith('Linux'):
+                    # Stop at first data line
+                    break
+    except Exception as e:
+        logger.warning(f"Failed to extract time reference from {resource_monitor_path}: {e}")
+
+    return None
 
 
 def epoch_to_datetime(epoch: int) -> str:

@@ -310,7 +310,7 @@ tools:
     kvm-virt-network/kvm:
       environment: vm
       tools:
-      - script: kvm_irqfd_stats_summary.py
+      - script: kvm_irqfd_stats_summary_arm.py
         template: sudo python3 {path} {QEMU_PID} --interval 1 --vhost-pid {vhost_pid}
           --category data --subcategory {subcategory}
         parameters:
@@ -326,24 +326,24 @@ tools:
           subcategory:
           - rx
           - tx
-      - script: kvm_irqfd_stats_summary.py
+      - script: kvm_irqfd_stats_summary_arm.py
         template: sudo python3 {path} {QEMU_PID} --interval 1 --category control
 performance_tests:
   throughput:
     single_stream:
-      duration: 3
+      duration: 10
     multi_stream:
-      duration: 3
+      duration: 10
       streams: 4
   latency:
-    duration: 3
+    duration: 10
     tcp_rr: {}
     udp_rr: {}
   pps:
     single_stream:
-      duration: 3
+      duration: 10
       target_bw: 1G
     multi_stream:
-      duration: 3
+      duration: 10
       streams: 4
       target_bw: 1G

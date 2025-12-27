@@ -16,7 +16,7 @@ from src.parsers import PerformanceParser, ResourceParser, LogSizeParser
 from src.comparator import BaselineComparator
 from src.report_generator import ReportGenerator
 from src.iteration_aggregator import IterationAggregator
-from src.utils import parse_tool_case_name, load_test_case_metadata
+from src.utils import parse_tool_case_name, load_test_case_metadata, extract_time_reference
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +123,20 @@ def process_tool_case(locator: DataLocator, tool_case_name: str,
         logger.error(f"Failed to locate data for {tool_case_name}")
         return None
 
-    # 2. Parse performance data
-    perf_data = PerformanceParser.parse_all(paths)
+    # 2. Extract time reference from resource monitor (for timezone-independent time conversion)
+    time_reference = None
+    if "server" in paths and "ebpf_monitoring" in paths["server"]:
+        monitoring = paths["server"]["ebpf_monitoring"]
+        if "resource_monitor" in monitoring:
+            time_reference = extract_time_reference(monitoring["resource_monitor"])
+            if time_reference:
+                logger.debug(f"Extracted time reference: {time_reference}")
+
+    # 3. Parse performance data (using time reference for accurate epoch calculation)
+    perf_data = PerformanceParser.parse_all(paths, time_reference)
     logger.debug(f"Parsed performance data for {tool_case_name}")
 
-    # 3. Parse resource monitoring data
+    # 4. Parse resource monitoring data
     resource_data = None
     if "server" in paths and "ebpf_monitoring" in paths["server"]:
         monitoring = paths["server"]["ebpf_monitoring"]
@@ -140,7 +149,7 @@ def process_tool_case(locator: DataLocator, tool_case_name: str,
             )
             logger.debug(f"Parsed resource monitoring data for {tool_case_name}")
 
-    # 4. Parse log size data
+    # 5. Parse log size data
     log_data = None
     if "server" in paths and "ebpf_monitoring" in paths["server"]:
         monitoring = paths["server"]["ebpf_monitoring"]
@@ -149,17 +158,17 @@ def process_tool_case(locator: DataLocator, tool_case_name: str,
             log_data = LogSizeParser.parse(monitoring["logsize_monitor"])
             logger.debug(f"Parsed log size data for {tool_case_name}")
 
-    # 5. Compare with baseline
+    # 6. Compare with baseline
     comparison = BaselineComparator.compare(perf_data, baseline_data)
     logger.debug(f"Completed baseline comparison for {tool_case_name}")
 
-    # 6. Parse metadata
+    # 7. Parse metadata
     metadata = parse_tool_case_name(tool_case_name)
 
-    # 7. Get command from paths
+    # 8. Get command from paths
     command = paths.get("command", "N/A")
 
-    # 8. Return complete result
+    # 9. Return complete result
     return {
         "tool_case": tool_case_name,
         "metadata": metadata,

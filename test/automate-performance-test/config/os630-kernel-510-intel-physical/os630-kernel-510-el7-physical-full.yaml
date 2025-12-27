@@ -323,19 +323,19 @@ tools:
 performance_tests:
   throughput:
     single_stream:
-      duration: 3
+      duration: 10
     multi_stream:
-      duration: 3
+      duration: 10
       streams: 4
   latency:
-    duration: 3
+    duration: 10
     tcp_rr: {}
     udp_rr: {}
   pps:
     single_stream:
-      duration: 3
+      duration: 10
       target_bw: 1G
     multi_stream:
-      duration: 3
+      duration: 10
       streams: 4
       target_bw: 1G
