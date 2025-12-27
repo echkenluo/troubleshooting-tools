@@ -4,8 +4,6 @@
       "Bash(find:*)",
       "Bash(grep:*)",
       "Bash(chmod:*)",
-      "mcp__ssh__execute_remote_command",
-      "mcp__ssh__scp_to_remote",
       "Bash(ssh:*)",
       "Bash(scp:*)",
       "Bash(python3:*)",
@@ -18,7 +16,8 @@
       "/Users/admin/workspace/kernel/",
       "/Users/admin/workspace/bcc-program/",
       "/Users/admin/workspace/linux-4.18.0-553.47.1.el8_10/",
-      "/Users/echken/workspace/kernel/"
+      "/Users/echken/workspace/kernel/",
+      "/Users/echken/workspace/ovs"
     ]
   },
   "outputStyle": "default"
