@@ -2,7 +2,7 @@
 # OS: openEuler, Kernel: 5.10, CPU: Hygon
 
 # Data root directory (relative to this config file)
-data_root: "../measurement-results/1225-hygon-510-oe"
+data_root: "../measurement-results/os630-kernel-510-hygon-physical"
 
 # Available iterations
 iterations:
@@ -49,7 +49,7 @@ topics:
 
 # Output configuration
 output_dir: "./output"
-output_subdir: "1225-hygon-510-oe"
+output_subdir: "os630-kernel-510-hygon-physical"
 output_formats:
   - csv
   - markdown

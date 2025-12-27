@@ -2,7 +2,7 @@
 # OS: openEuler, Kernel: 5.10, CPU: Intel
 
 # Data root directory (relative to this config file)
-data_root: "../measurement-results/1223-intel-510-oe"
+data_root: "../measurement-results/os630-kernel-510-intel-physical"
 
 # Available iterations
 iterations:
@@ -10,7 +10,6 @@ iterations:
   - iteration_002
   - iteration_003
   - iteration_004
-  - iteration_005
 
 # Selected iterations for analysis
 selected_iterations: all
@@ -50,7 +49,7 @@ topics:
 
 # Output configuration
 output_dir: "./output"
-output_subdir: "1223-intel-510-oe"
+output_subdir: "os630-kernel-510-intel-physical"
 output_formats:
   - csv
   - markdown
