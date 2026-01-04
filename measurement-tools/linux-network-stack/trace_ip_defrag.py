@@ -453,7 +453,9 @@ class KfreeSkbData(ct.Structure):
 def get_ip_str(nbo_ip_int):
     """Convert Network Byte Order integer to IP string."""
     try:
-        return inet_ntop(AF_INET, pack("!I", nbo_ip_int))
+        # Use native byte order "I" since ctypes already interprets the bytes
+        # in host order, and we need to preserve the original network byte layout
+        return inet_ntop(AF_INET, pack("I", nbo_ip_int))
     except ValueError:
         return str(nbo_ip_int) # Fallback if invalid
 
