@@ -33,6 +33,7 @@ import argparse
 import datetime
 import json
 import re
+import socket
 import struct
 # BCC module import with fallback
 try:
@@ -130,6 +131,7 @@ class QueueKey(ct.Structure):
         ("sock_ptr", ct.c_uint64),
         ("queue_index", ct.c_uint32),
         ("dev_name", ct.c_char * 16),
+        ("timestamp", ct.c_uint64),
     ]
 
 class InterruptTraceEvent(ct.Structure):
@@ -152,6 +154,11 @@ class InterruptTraceEvent(ct.Structure):
         ("sport", ct.c_uint16),
         ("dport", ct.c_uint16),
         ("protocol", ct.c_uint8),
+        # ICMP fields
+        ("icmp_id", ct.c_uint16),
+        ("icmp_seq", ct.c_uint16),
+        ("icmp_type", ct.c_uint8),
+        ("icmp_code", ct.c_uint8),
     ]
 
 # BPF program with proven structures and implementation
@@ -175,6 +182,16 @@ bpf_text = """
 #include <linux/workqueue.h>
 #include <linux/list.h>
 #include <linux/poll.h>
+#include <linux/icmp.h>
+
+// Packet filter macros (set via Python string substitution)
+#define FILTER_SRC_IP 0x%x
+#define FILTER_DST_IP 0x%x
+#define FILTER_SRC_PORT %d
+#define FILTER_DST_PORT %d
+#define FILTER_PROTOCOL %d   // 0=all, 6=TCP, 17=UDP, 1=ICMP
+#define FILTER_ICMP_ID %d    // 0=any
+#define FILTER_ICMP_SEQ %d   // 0=any
 
 #define NETDEV_ALIGN 32
 #define MAX_QUEUES 256
@@ -421,6 +438,7 @@ struct queue_key {
     u64 sock_ptr;        // Unique sock pointer for this queue
     u32 queue_index;     // Queue index
     char dev_name[16];   // Device name
+    u64 timestamp;       // Timestamp from Stage 1 for delay calculation
 };
 
 struct interrupt_connection {
@@ -459,6 +477,11 @@ struct interrupt_trace_event {
     u16 sport;
     u16 dport;
     u8 protocol;
+    // ICMP fields
+    u16 icmp_id;
+    u16 icmp_seq;
+    u8 icmp_type;
+    u8 icmp_code;
 };
 
 // BPF Maps for interrupt chain tracking
@@ -502,6 +525,39 @@ static inline void submit_interrupt_event(struct pt_regs *ctx, struct interrupt_
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
     
     interrupt_events.perf_submit(ctx, event, sizeof(*event));
+}
+
+// Packet filter function - returns 1 if packet matches filter, 0 otherwise
+static inline int packet_filter(u32 saddr, u32 daddr, u8 protocol,
+                                u16 sport, u16 dport,
+                                u16 icmp_id, u16 icmp_seq) {
+    // Protocol filter
+    if (FILTER_PROTOCOL != 0 && protocol != FILTER_PROTOCOL)
+        return 0;
+
+    // IP filter
+    if (FILTER_SRC_IP != 0 && saddr != FILTER_SRC_IP)
+        return 0;
+    if (FILTER_DST_IP != 0 && daddr != FILTER_DST_IP)
+        return 0;
+
+    // Port filter (TCP/UDP)
+    if (protocol == IPPROTO_TCP || protocol == IPPROTO_UDP) {
+        if (FILTER_SRC_PORT != 0 && sport != htons(FILTER_SRC_PORT))
+            return 0;
+        if (FILTER_DST_PORT != 0 && dport != htons(FILTER_DST_PORT))
+            return 0;
+    }
+
+    // ICMP filter
+    if (protocol == IPPROTO_ICMP) {
+        if (FILTER_ICMP_ID != 0 && icmp_id != htons(FILTER_ICMP_ID))
+            return 0;
+        if (FILTER_ICMP_SEQ != 0 && icmp_seq != htons(FILTER_ICMP_SEQ))
+            return 0;
+    }
+
+    return 1;
 }
 
 // Stage 1: tun_net_xmit - Based on proven implementation
@@ -548,40 +604,76 @@ int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_devi
     
     // Get socket pointer from tfile - PROVEN APPROACH
     u64 sock_ptr = (u64)&tfile->socket;
-    
-    // Register this queue as target
+
+    // Extract packet information using skb->head + offset approach (more reliable)
+    u32 saddr = 0, daddr = 0;
+    u16 sport = 0, dport = 0;
+    u8 protocol = 0;
+    u16 icmp_id = 0, icmp_seq = 0;
+    u8 icmp_type = 0, icmp_code = 0;
+
+    unsigned char *head = NULL;
+    u16 network_header_offset = 0;
+    u16 transport_header_offset = 0;
+
+    if (bpf_probe_read_kernel(&head, sizeof(head), &skb->head) < 0)
+        goto skip_packet_info;
+    if (bpf_probe_read_kernel(&network_header_offset, sizeof(network_header_offset), &skb->network_header) < 0)
+        goto skip_packet_info;
+
+    if (network_header_offset == (u16)~0U || network_header_offset > 2048)
+        goto skip_packet_info;
+
+    // Read IP header
+    struct iphdr ip = {};
+    if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network_header_offset) < 0)
+        goto skip_packet_info;
+
+    saddr = ip.saddr;
+    daddr = ip.daddr;
+    protocol = ip.protocol;
+
+    // Calculate transport header offset
+    u8 ip_ihl = ip.ihl & 0x0F;
+    if (ip_ihl < 5) ip_ihl = 5;
+    u16 ip_hdr_len = ip_ihl * 4;
+
+    if (protocol == IPPROTO_TCP) {
+        struct tcphdr tcp = {};
+        if (bpf_probe_read_kernel(&tcp, sizeof(tcp), head + network_header_offset + ip_hdr_len) == 0) {
+            sport = tcp.source;
+            dport = tcp.dest;
+        }
+    } else if (protocol == IPPROTO_UDP) {
+        struct udphdr udp = {};
+        if (bpf_probe_read_kernel(&udp, sizeof(udp), head + network_header_offset + ip_hdr_len) == 0) {
+            sport = udp.source;
+            dport = udp.dest;
+        }
+    } else if (protocol == IPPROTO_ICMP) {
+        struct icmphdr icmp = {};
+        if (bpf_probe_read_kernel(&icmp, sizeof(icmp), head + network_header_offset + ip_hdr_len) == 0) {
+            icmp_type = icmp.type;
+            icmp_code = icmp.code;
+            icmp_id = icmp.un.echo.id;
+            icmp_seq = icmp.un.echo.sequence;
+        }
+    }
+
+skip_packet_info:
+
+    // Apply packet filter
+    if (!packet_filter(saddr, daddr, protocol, sport, dport, icmp_id, icmp_seq))
+        return 0;
+
+    // Register this queue as target AFTER filter passes (for Stage 2-5 correlation)
     struct queue_key qkey = {};
     qkey.sock_ptr = sock_ptr;
     qkey.queue_index = queue_index;
     bpf_probe_read_kernel_str(qkey.dev_name, sizeof(qkey.dev_name), dev->name);
+    qkey.timestamp = bpf_ktime_get_ns();  // Store timestamp for Stage 2 delay calculation
     target_queues.update(&sock_ptr, &qkey);
-    
-    // Extract packet information
-    u32 saddr = 0, daddr = 0;
-    u16 sport = 0, dport = 0;
-    u8 protocol = 0;
-    
-    struct iphdr *ip_header = (struct iphdr *)(skb->data + sizeof(struct ethhdr));
-    if ((char*)ip_header + sizeof(struct iphdr) <= (char*)skb->tail) {
-        READ_FIELD(&saddr, ip_header, saddr);
-        READ_FIELD(&daddr, ip_header, daddr);
-        READ_FIELD(&protocol, ip_header, protocol);
-        
-        if (protocol == IPPROTO_TCP) {
-            struct tcphdr *tcp_header = (struct tcphdr *)((char*)ip_header + sizeof(struct iphdr));
-            if ((char*)tcp_header + sizeof(struct tcphdr) <= (char*)skb->tail) {
-                READ_FIELD(&sport, tcp_header, source);
-                READ_FIELD(&dport, tcp_header, dest);
-            }
-        } else if (protocol == IPPROTO_UDP) {
-            struct udphdr *udp_header = (struct udphdr *)((char*)ip_header + sizeof(struct iphdr));
-            if ((char*)udp_header + sizeof(struct udphdr) <= (char*)skb->tail) {
-                READ_FIELD(&sport, udp_header, source);
-                READ_FIELD(&dport, udp_header, dest);
-            }
-        }
-    }
-    
+
     // Emit Stage 1 event
     struct interrupt_trace_event event = {};
     event.stage = 1;  // tun_net_xmit
@@ -598,7 +690,11 @@ int trace_tun_net_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_devi
     event.dport = dport;
     event.protocol = protocol;
     event.delay_ns = 0;
-    
+    event.icmp_id = icmp_id;
+    event.icmp_seq = icmp_seq;
+    event.icmp_type = icmp_type;
+    event.icmp_code = icmp_code;
+
     submit_interrupt_event(ctx, &event);
     return 0;
 }
@@ -643,6 +739,10 @@ int trace_vhost_signal(struct pt_regs *ctx) {
     // Note: ARM64 kernel pointers can start with 0xff3f... not just 0xffff...
     if (!eventfd_ptr || eventfd_ctx < 0xff00000000000000ULL) return 0;
     
+    // Calculate delay from Stage 1 (tun_net_xmit)
+    u64 timestamp = bpf_ktime_get_ns();
+    u64 delay_from_stage1 = timestamp - qkey->timestamp;
+
     // Save interrupt chain connection for irqfd_inject to use
     struct interrupt_connection ic_info = {};
     ic_info.sock_ptr = sock_ptr;
@@ -653,14 +753,18 @@ int trace_vhost_signal(struct pt_regs *ctx) {
         ic_info.dev_name[i] = qkey->dev_name[i];
     }
     ic_info.queue_index = qkey->queue_index;
-    ic_info.timestamp = bpf_ktime_get_ns();
+    ic_info.timestamp = timestamp;
     interrupt_chains.update(&eventfd_ctx, &ic_info);
-    
+
     // Update sequence check - Stage 2 should come after Stage 1
     u64 current_stage = 2;
     sequence_check.update(&eventfd_ctx, &current_stage);
-    
-    // Emit Stage 2 event
+
+    // Delete target_queues entry for one-shot correlation
+    // This ensures Stage 2-5 only fire for filtered packets
+    target_queues.delete(&sock_ptr);
+
+    // Emit Stage 2 event with delay from Stage 1
     struct interrupt_trace_event event = {};
     event.stage = 2;  // vhost_signal
     // Manual copy instead of __builtin_memcpy to avoid BPF issues
@@ -672,8 +776,8 @@ int trace_vhost_signal(struct pt_regs *ctx) {
     event.sock_ptr = sock_ptr;
     event.eventfd_ctx = eventfd_ctx;
     event.vq_ptr = (u64)vq;
-    event.delay_ns = 0;
-    
+    event.delay_ns = delay_from_stage1;  // Delay from Stage 1 (tun_net_xmit)
+
     submit_interrupt_event(ctx, &event);
     return 0;
 }
@@ -920,6 +1024,12 @@ int trace_vmx_deliver_posted_interrupt(struct pt_regs *ctx) {
     event.vq_ptr = (u64)vcpu;
 
     submit_interrupt_event(ctx, &event);
+
+    // Clean up correlation entries after chain completes (one-shot correlation)
+    gsi_to_queue.delete(&gsi_key);
+    interrupt_chains.delete(&eventfd_ctx);
+    sequence_check.delete(&eventfd_ctx);
+
     return 0;
 }
 """
@@ -970,7 +1080,11 @@ def process_interrupt_event(cpu, data, size):
         'daddr': event.daddr,
         'sport': event.sport,
         'dport': event.dport,
-        'protocol': event.protocol
+        'protocol': event.protocol,
+        'icmp_id': event.icmp_id,
+        'icmp_seq': event.icmp_seq,
+        'icmp_type': event.icmp_type,
+        'icmp_code': event.icmp_code
     }
     
     interrupt_traces.append(event_data)
@@ -987,14 +1101,21 @@ def process_interrupt_event(cpu, data, size):
     
     packet_info = ""
     if event.stage == 1 and event.saddr > 0:  # tun_net_xmit with packet info
-        import socket
         try:
-            src_ip = socket.inet_ntoa(struct.pack('!I', event.saddr))
-            dst_ip = socket.inet_ntoa(struct.pack('!I', event.daddr))
+            # IP stored in network byte order, read as native int on little-endian
+            # Use '<I' to pack back to original network byte order
+            src_ip = socket.inet_ntoa(struct.pack('<I', event.saddr))
+            dst_ip = socket.inet_ntoa(struct.pack('<I', event.daddr))
             if event.protocol == 6:  # TCP
-                packet_info = " TCP {}:{} -> {}:{}".format(src_ip, event.sport, dst_ip, event.dport)
+                packet_info = " TCP {}:{} -> {}:{}".format(
+                    src_ip, socket.ntohs(event.sport), dst_ip, socket.ntohs(event.dport))
             elif event.protocol == 17:  # UDP
-                packet_info = " UDP {}:{} -> {}:{}".format(src_ip, event.sport, dst_ip, event.dport)
+                packet_info = " UDP {}:{} -> {}:{}".format(
+                    src_ip, socket.ntohs(event.sport), dst_ip, socket.ntohs(event.dport))
+            elif event.protocol == 1:  # ICMP
+                packet_info = " ICMP {} -> {} type={} code={} id={} seq={}".format(
+                    src_ip, dst_ip, event.icmp_type, event.icmp_code,
+                    socket.ntohs(event.icmp_id), socket.ntohs(event.icmp_seq))
             else:
                 packet_info = " IP {} -> {} proto={}".format(src_ip, dst_ip, event.protocol)
         except:
@@ -1010,8 +1131,8 @@ def process_interrupt_event(cpu, data, size):
         detail = " Queue={} Sock(tfile)=0x{:x}".format(event.queue_index, event.sock_ptr)
     elif stage == 2:
         # Stage 2: vhost_signal - sock from vq->private_data, eventfd from vq->call_ctx.ctx
-        detail = " Sock(vq)=0x{:x} EventFD(vq)=0x{:x} VQ=0x{:x}".format(
-            event.sock_ptr, event.eventfd_ctx, event.vq_ptr)
+        detail = " Sock(vq)=0x{:x} EventFD(vq)=0x{:x} VQ=0x{:x} Delay={:.3f}ms".format(
+            event.sock_ptr, event.eventfd_ctx, event.vq_ptr, delay_ms)
     elif stage == 3:
         # Stage 3: eventfd_signal - eventfd is function parameter
         detail = " EventFD(arg)=0x{:x} Delay={:.3f}ms".format(
@@ -1175,7 +1296,16 @@ Examples:
     parser.add_argument("--output", "-o", help="Output JSON file for trace data")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     parser.add_argument("--generate-traffic", action="store_true", help="Suggest commands to generate network traffic")
-    
+    # Packet filter arguments
+    parser.add_argument("--src-ip", type=str, help="Filter by source IP address")
+    parser.add_argument("--dst-ip", type=str, help="Filter by destination IP address")
+    parser.add_argument("--protocol", type=str, choices=['tcp', 'udp', 'icmp', 'all'],
+                        default='all', help="Filter by protocol (default: all)")
+    parser.add_argument("--src-port", type=int, help="Filter by source port (TCP/UDP)")
+    parser.add_argument("--dst-port", type=int, help="Filter by destination port (TCP/UDP)")
+    parser.add_argument("--icmp-id", type=int, help="Filter by ICMP echo ID")
+    parser.add_argument("--icmp-seq", type=int, help="Filter by ICMP echo sequence")
+
     args = parser.parse_args()
     
     if args.generate_traffic:
@@ -1205,6 +1335,54 @@ Examples:
         bpf_program = bpf_text
         if kernel_5x:
             bpf_program = "#define KERNEL_VERSION_5X 1\n" + bpf_program
+
+        # Convert IP address string to network byte order integer
+        def ip_to_int(ip_str):
+            if not ip_str:
+                return 0
+            # Use '<I' (little-endian) to match BPF's interpretation of network bytes
+            return struct.unpack("<I", socket.inet_aton(ip_str))[0]
+
+        # Protocol string to number mapping
+        proto_map = {'all': 0, 'tcp': 6, 'udp': 17, 'icmp': 1}
+
+        # Substitute filter values in BPF text
+        filter_src_ip = ip_to_int(args.src_ip)
+        filter_dst_ip = ip_to_int(args.dst_ip)
+        filter_src_port = args.src_port if args.src_port else 0
+        filter_dst_port = args.dst_port if args.dst_port else 0
+        filter_protocol = proto_map.get(args.protocol, 0)
+        filter_icmp_id = args.icmp_id if args.icmp_id else 0
+        filter_icmp_seq = args.icmp_seq if args.icmp_seq else 0
+
+        bpf_program = bpf_program % (
+            filter_src_ip,
+            filter_dst_ip,
+            filter_src_port,
+            filter_dst_port,
+            filter_protocol,
+            filter_icmp_id,
+            filter_icmp_seq,
+        )
+
+        # Print active filters
+        if any([args.src_ip, args.dst_ip, args.protocol != 'all',
+                args.src_port, args.dst_port, args.icmp_id, args.icmp_seq]):
+            print("Packet filters:")
+            if args.protocol != 'all':
+                print("  Protocol: {}".format(args.protocol.upper()))
+            if args.src_ip:
+                print("  Source IP: {}".format(args.src_ip))
+            if args.dst_ip:
+                print("  Destination IP: {}".format(args.dst_ip))
+            if args.src_port:
+                print("  Source Port: {}".format(args.src_port))
+            if args.dst_port:
+                print("  Destination Port: {}".format(args.dst_port))
+            if args.icmp_id:
+                print("  ICMP ID: {}".format(args.icmp_id))
+            if args.icmp_seq:
+                print("  ICMP Seq: {}".format(args.icmp_seq))
 
         b = BPF(text=bpf_program)
 
