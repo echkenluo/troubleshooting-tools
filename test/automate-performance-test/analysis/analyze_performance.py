@@ -198,21 +198,36 @@ def get_all_topics(iteration_path: str, config: Dict) -> List[str]:
     return topics
 
 
-def detect_test_type_for_topic(topic: str) -> str:
+def detect_test_type_for_topic(topic: str, config: Dict = None) -> str:
     """Detect test type (host or vm) for a topic
 
     Args:
-        topic: Topic name
+        topic: Topic name (individual tool name like 'ovs_upcall_latency_summary')
+        config: Configuration dictionary with topics.host and topics.vm lists
 
     Returns:
         "host" or "vm"
     """
-    host_topics = ["system_network_performance", "linux_network_stack"]
-    vm_topics = ["kvm_virt_network", "ovs_monitoring", "vm_network_performance"]
+    # Use config-based detection if config is provided
+    if config and "topics" in config:
+        host_topics = config["topics"].get("host", [])
+        vm_topics = config["topics"].get("vm", [])
 
-    if topic in host_topics:
+        if topic in host_topics:
+            return "host"
+        elif topic in vm_topics:
+            return "vm"
+        else:
+            logger.warning(f"Topic '{topic}' not found in config, defaulting to host")
+            return "host"
+
+    # Fallback to legacy detection (for backward compatibility)
+    legacy_host_topics = ["system_network_performance", "linux_network_stack"]
+    legacy_vm_topics = ["kvm_virt_network", "ovs_monitoring", "vm_network_performance"]
+
+    if topic in legacy_host_topics:
         return "host"
-    elif topic in vm_topics:
+    elif topic in legacy_vm_topics:
         return "vm"
     else:
         logger.warning(f"Unknown topic type: {topic}, defaulting to host")
@@ -451,8 +466,8 @@ def main():
 
             logger.info(f"Found {len(tool_cases)} tool cases")
 
-            # Parse baseline
-            test_type = detect_test_type_for_topic(topic)
+            # Parse baseline - use config to correctly detect host vs vm topics
+            test_type = detect_test_type_for_topic(topic, config)
             logger.info(f"Test type: {test_type}")
 
             baseline_paths = locator.locate_baseline(test_type)
