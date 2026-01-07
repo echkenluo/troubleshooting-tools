@@ -10,6 +10,10 @@
 #   sudo ./icmp_drop_detector.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #       --rx-iface eth0 --tx-iface eth1 [--timeout-ms 1000]
 #
+#   # For bond interfaces, specify all slaves:
+#   sudo ./icmp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
+#       --rx-iface ens4f0,ens4f1 --tx-iface vnet0
+#
 # Flow tracking:
 #   1. Request RX at rx-iface (src->dst, type=8)
 #   2. Request TX at tx-iface (src->dst, type=8)
@@ -52,14 +56,36 @@ bpf_text = """
 
 #define SRC_IP_FILTER 0x%x
 #define DST_IP_FILTER 0x%x
-#define RX_IFINDEX %d
-#define TX_IFINDEX %d
+
+// Multi-interface support: up to 8 interfaces per direction
+#define MAX_IFACES 8
+__IFACE_ARRAYS__
 
 #define STAGE_REQ_RX  0  // Request received at rx-iface
 #define STAGE_REQ_TX  1  // Request sent from tx-iface
 #define STAGE_REP_RX  2  // Reply received at tx-iface
 #define STAGE_REP_TX  3  // Reply sent from rx-iface
 #define MAX_STAGES    4
+
+// Check if ifindex matches any RX interface
+static __always_inline int is_rx_iface(int ifindex) {
+    #pragma unroll
+    for (int i = 0; i < RX_IFACE_COUNT; i++) {
+        if (rx_ifindexes[i] == ifindex)
+            return 1;
+    }
+    return 0;
+}
+
+// Check if ifindex matches any TX interface
+static __always_inline int is_tx_iface(int ifindex) {
+    #pragma unroll
+    for (int i = 0; i < TX_IFACE_COUNT; i++) {
+        if (tx_ifindexes[i] == ifindex)
+            return 1;
+    }
+    return 0;
+}
 
 // ICMP flow key - uniquely identifies a ping session
 struct icmp_flow_key {
@@ -165,14 +191,14 @@ static __always_inline void record_event(struct pt_regs *ctx,
         return;
 
     // Check interface match based on stage
-    int expected_ifindex;
+    int match = 0;
     if (stage == STAGE_REQ_RX || stage == STAGE_REP_TX) {
-        expected_ifindex = RX_IFINDEX;
+        match = is_rx_iface(ifindex);
     } else {
-        expected_ifindex = TX_IFINDEX;
+        match = is_tx_iface(ifindex);
     }
 
-    if (ifindex != expected_ifindex)
+    if (!match)
         return;
 
     struct icmp_flow_key key = {};
@@ -244,9 +270,9 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
         return 0;
 
     u8 stage;
-    if (pkt_type == 1 && ifindex == RX_IFINDEX) {
+    if (pkt_type == 1 && is_rx_iface(ifindex)) {
         stage = STAGE_REQ_RX;
-    } else if (pkt_type == 2 && ifindex == TX_IFINDEX) {
+    } else if (pkt_type == 2 && is_tx_iface(ifindex)) {
         stage = STAGE_REP_RX;
     } else {
         return 0;
@@ -305,9 +331,9 @@ int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
         return 0;
 
     u8 stage;
-    if (pkt_type == 1 && ifindex == TX_IFINDEX) {
+    if (pkt_type == 1 && is_tx_iface(ifindex)) {
         stage = STAGE_REQ_TX;
-    } else if (pkt_type == 2 && ifindex == RX_IFINDEX) {
+    } else if (pkt_type == 2 && is_rx_iface(ifindex)) {
         stage = STAGE_REP_TX;
     } else {
         return 0;
@@ -528,6 +554,10 @@ Examples:
   sudo ./icmp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \\
       --rx-iface ens1f0 --tx-iface ens1f1 --timeout-ms 2000
 
+  # For bond interfaces, specify all slaves (LACP/802.3ad)
+  sudo ./icmp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \\
+      --rx-iface ens4f0,ens4f1 --tx-iface vnet0
+
 Flow stages:
   [0] ReqRX: Request received at rx-iface
   [1] ReqTX: Request sent from tx-iface
@@ -540,9 +570,9 @@ Flow stages:
     parser.add_argument('--dst-ip', type=str, required=True,
                         help='Destination IP of ICMP request')
     parser.add_argument('--rx-iface', type=str, required=True,
-                        help='Interface where request is received (and reply is sent)')
+                        help='Interface(s) where request is received (comma-separated for bond slaves)')
     parser.add_argument('--tx-iface', type=str, required=True,
-                        help='Interface where request is sent (and reply is received)')
+                        help='Interface(s) where request is sent (comma-separated for bond slaves)')
     parser.add_argument('--timeout-ms', type=int, default=1000,
                         help='Timeout in ms to wait for complete flow (default: 1000)')
     parser.add_argument('--verbose', action='store_true',
@@ -550,9 +580,19 @@ Flow stages:
 
     args = parser.parse_args()
 
+    # Parse comma-separated interface lists
+    rx_ifaces = [s.strip() for s in args.rx_iface.split(',')]
+    tx_ifaces = [s.strip() for s in args.tx_iface.split(',')]
+
+    # Get interface indices
+    rx_ifindexes = []
+    tx_ifindexes = []
+
     try:
-        rx_ifindex = get_if_index(args.rx_iface)
-        tx_ifindex = get_if_index(args.tx_iface)
+        for iface in rx_ifaces:
+            rx_ifindexes.append((iface, get_if_index(iface)))
+        for iface in tx_ifaces:
+            tx_ifindexes.append((iface, get_if_index(iface)))
     except OSError as e:
         print("Error getting interface index: %s" % e)
         sys.exit(1)
@@ -560,11 +600,24 @@ Flow stages:
     src_ip_hex = ip_to_hex(args.src_ip)
     dst_ip_hex = ip_to_hex(args.dst_ip)
 
+    # Generate BPF interface arrays
+    rx_indices = [idx for _, idx in rx_ifindexes]
+    tx_indices = [idx for _, idx in tx_ifindexes]
+
+    iface_arrays = """
+#define RX_IFACE_COUNT %d
+#define TX_IFACE_COUNT %d
+static const int rx_ifindexes[RX_IFACE_COUNT] = {%s};
+static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
+""" % (len(rx_indices), len(tx_indices),
+       ', '.join(str(i) for i in rx_indices),
+       ', '.join(str(i) for i in tx_indices))
+
     print("=== ICMP Drop Detector ===")
     print("Source IP: %s" % args.src_ip)
     print("Destination IP: %s" % args.dst_ip)
-    print("RX Interface: %s (ifindex=%d)" % (args.rx_iface, rx_ifindex))
-    print("TX Interface: %s (ifindex=%d)" % (args.tx_iface, tx_ifindex))
+    print("RX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in rx_ifindexes))
+    print("TX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in tx_ifindexes))
     print("Timeout: %d ms" % args.timeout_ms)
     print("")
     print("Flow path:")
@@ -575,7 +628,9 @@ Flow stages:
     print("")
 
     try:
-        b = BPF(text=bpf_text % (src_ip_hex, dst_ip_hex, rx_ifindex, tx_ifindex))
+        bpf_code = bpf_text % (src_ip_hex, dst_ip_hex)
+        bpf_code = bpf_code.replace("__IFACE_ARRAYS__", iface_arrays)
+        b = BPF(text=bpf_code)
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
