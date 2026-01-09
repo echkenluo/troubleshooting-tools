@@ -13,8 +13,8 @@
     ],
     "deny": [],
     "additionalDirectories": [
-      "/Users/echken/workspace/kernel/",
-      "/Users/echken/workspace/ovs"
+      "~/workspace/kernel/",
+      "~/workspace/ovs"
     ]
   },
   "outputStyle": "default"
