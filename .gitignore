@@ -14,3 +14,4 @@ test/workflow/result/*
 docs/publish/pptx/node_modules/
 packaging/rpm/output
 *.DS_Store
+.task

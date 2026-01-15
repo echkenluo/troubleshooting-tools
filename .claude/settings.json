@@ -11,6 +11,7 @@
     "slack@claude-plugins-official": true,
     "pr-review-toolkit@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true
+    "security-guidance@claude-plugins-official": true,
+    "claude-codex@claude-codex": true
   }
 }
