@@ -15,3 +15,4 @@ docs/publish/pptx/node_modules/
 packaging/rpm/output
 *.DS_Store
 .task
+docs/planning-with-files
