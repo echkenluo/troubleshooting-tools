@@ -1,13 +1,13 @@
 {
   "metadata": {
     "environment": "phy-620",
-    "total_cases": 115
+    "total_cases": 97
   },
   "test_cases": [
     {
       "id": 1,
       "name": "system_network_perfomance_metrics_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol tcp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -20,7 +20,7 @@
     {
       "id": 2,
       "name": "system_network_perfomance_metrics_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol tcp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -33,7 +33,7 @@
     {
       "id": 3,
       "name": "system_network_perfomance_metrics_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol udp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -46,7 +46,7 @@
     {
       "id": 4,
       "name": "system_network_perfomance_metrics_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_perfomance_metrics.py --internal-interface port-mgt --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol udp --latency-us 100",
       "script": "system_network_perfomance_metrics.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -59,7 +59,7 @@
     {
       "id": 5,
       "name": "system_network_latency_details_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol tcp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -72,7 +72,7 @@
     {
       "id": 6,
       "name": "system_network_latency_details_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol tcp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -85,7 +85,7 @@
     {
       "id": 7,
       "name": "system_network_latency_details_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol udp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -98,7 +98,7 @@
     {
       "id": 8,
       "name": "system_network_latency_details_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_details.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol udp --latency-us 100",
       "script": "system_network_latency_details.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -111,7 +111,7 @@
     {
       "id": 9,
       "name": "system_network_latency_summary_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol tcp",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol tcp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -124,7 +124,7 @@
     {
       "id": 10,
       "name": "system_network_latency_summary_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol tcp",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol tcp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -137,7 +137,7 @@
     {
       "id": 11,
       "name": "system_network_latency_summary_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --protocol udp",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --protocol udp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -150,7 +150,7 @@
     {
       "id": 12,
       "name": "system_network_latency_summary_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --protocol udp",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_latency_summary.py --phy-interface enp24s0f0np0 --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --protocol udp --interval 1",
       "script": "system_network_latency_summary.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -163,7 +163,7 @@
     {
       "id": 13,
       "name": "system_network_icmp_rtt_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --direction rx --phy-iface1 enp24s0f0np0 --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --direction rx --phy-interface enp24s0f0np0 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -176,7 +176,7 @@
     {
       "id": 14,
       "name": "system_network_icmp_rtt_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --direction tx --phy-iface1 enp24s0f0np0 --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/system-network/system_network_icmp_rtt.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --direction tx --phy-interface enp24s0f0np0 --latency-ms 1",
       "script": "system_network_icmp_rtt.py",
       "category": "performance/system-network",
       "environment": "host",
@@ -189,7 +189,7 @@
     {
       "id": 15,
       "name": "vm_network_latency_summary_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -202,7 +202,7 @@
     {
       "id": 16,
       "name": "vm_network_latency_summary_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -215,7 +215,7 @@
     {
       "id": 17,
       "name": "vm_network_latency_summary_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -228,7 +228,7 @@
     {
       "id": 18,
       "name": "vm_network_latency_summary_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -241,7 +241,7 @@
     {
       "id": 19,
       "name": "vm_network_latency_summary_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -254,7 +254,7 @@
     {
       "id": 20,
       "name": "vm_network_latency_summary_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_summary.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp --interval 1",
       "script": "vm_network_latency_summary.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -267,7 +267,7 @@
     {
       "id": 21,
       "name": "vm_network_latency_details_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -280,7 +280,7 @@
     {
       "id": 22,
       "name": "vm_network_latency_details_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -293,7 +293,7 @@
     {
       "id": 23,
       "name": "vm_network_latency_details_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -306,7 +306,7 @@
     {
       "id": 24,
       "name": "vm_network_latency_details_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -319,7 +319,7 @@
     {
       "id": 25,
       "name": "vm_network_latency_details_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -332,7 +332,7 @@
     {
       "id": 26,
       "name": "vm_network_latency_details_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_latency_details.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp --latency-us 100",
       "script": "vm_network_latency_details.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -345,7 +345,7 @@
     {
       "id": 27,
       "name": "vm_network_performance_metrics_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -358,7 +358,7 @@
     {
       "id": 28,
       "name": "vm_network_performance_metrics_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -371,7 +371,7 @@
     {
       "id": 29,
       "name": "vm_network_performance_metrics_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -384,7 +384,7 @@
     {
       "id": 30,
       "name": "vm_network_performance_metrics_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -397,7 +397,7 @@
     {
       "id": 31,
       "name": "vm_network_performance_metrics_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction rx --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -410,7 +410,7 @@
     {
       "id": 32,
       "name": "vm_network_performance_metrics_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet81 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp --latency-us 100",
+      "command": "sudo python3 measurement-tools/performance/vm-network/vm_network_performance_metrics.py --vm-interface vnet126 --phy-interface enp24s0f0np0 --direction tx --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp --latency-us 100",
       "script": "vm_network_performance_metrics.py",
       "category": "performance/vm-network",
       "environment": "vm",
@@ -423,7 +423,7 @@
     {
       "id": 33,
       "name": "eth_drop_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol tcp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -436,7 +436,7 @@
     {
       "id": 34,
       "name": "eth_drop_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol tcp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -449,7 +449,7 @@
     {
       "id": 35,
       "name": "eth_drop_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol udp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -462,7 +462,7 @@
     {
       "id": 36,
       "name": "eth_drop_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol udp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -475,7 +475,7 @@
     {
       "id": 37,
       "name": "eth_drop_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol icmp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -488,7 +488,7 @@
     {
       "id": 38,
       "name": "eth_drop_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/eth_drop.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol icmp",
       "script": "eth_drop.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -501,7 +501,7 @@
     {
       "id": 39,
       "name": "kernel_drop_stack_stats_summary_all_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol tcp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -514,7 +514,7 @@
     {
       "id": 40,
       "name": "kernel_drop_stack_stats_summary_all_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol tcp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -527,7 +527,7 @@
     {
       "id": 41,
       "name": "kernel_drop_stack_stats_summary_all_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol udp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -540,7 +540,7 @@
     {
       "id": 42,
       "name": "kernel_drop_stack_stats_summary_all_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol udp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -553,7 +553,7 @@
     {
       "id": 43,
       "name": "kernel_drop_stack_stats_summary_all_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --l4-protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --l4-protocol icmp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -566,7 +566,7 @@
     {
       "id": 44,
       "name": "kernel_drop_stack_stats_summary_all_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --l4-protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/kernel_drop_stack_stats_summary_all.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --l4-protocol icmp --interval 1",
       "script": "kernel_drop_stack_stats_summary_all.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -579,7 +579,7 @@
     {
       "id": 45,
       "name": "qdisc_drop_trace",
-      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/qdisc_drop_trace.py",
+      "command": "sudo python3 measurement-tools/linux-network-stack/packet-drop/qdisc_drop_trace.py --interval 1 --summary",
       "script": "qdisc_drop_trace.py",
       "category": "linux-network-stack/packet-drop",
       "environment": "host",
@@ -589,7 +589,7 @@
     {
       "id": 46,
       "name": "trace_conntrack_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --protocol tcp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -602,7 +602,7 @@
     {
       "id": 47,
       "name": "trace_conntrack_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --protocol tcp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --protocol tcp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -615,7 +615,7 @@
     {
       "id": 48,
       "name": "trace_conntrack_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --protocol udp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -628,7 +628,7 @@
     {
       "id": 49,
       "name": "trace_conntrack_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --protocol udp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -641,7 +641,7 @@
     {
       "id": 50,
       "name": "trace_conntrack_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --protocol icmp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -654,7 +654,7 @@
     {
       "id": 51,
       "name": "trace_conntrack_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --protocol icmp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_conntrack.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --protocol icmp",
       "script": "trace_conntrack.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -667,7 +667,7 @@
     {
       "id": 52,
       "name": "trace_ip_defrag_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_ip_defrag.py --src-ip 192.168.70.34 --dst-ip 192.168.70.31 --protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_ip_defrag.py --src-ip 192.168.70.32 --dst-ip 192.168.70.31 --protocol udp",
       "script": "trace_ip_defrag.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -680,7 +680,7 @@
     {
       "id": 53,
       "name": "trace_ip_defrag_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/linux-network-stack/trace_ip_defrag.py --src-ip 192.168.70.31 --dst-ip 192.168.70.34 --protocol udp",
+      "command": "sudo python3 measurement-tools/linux-network-stack/trace_ip_defrag.py --src-ip 192.168.70.31 --dst-ip 192.168.70.32 --protocol udp",
       "script": "trace_ip_defrag.py",
       "category": "linux-network-stack",
       "environment": "host",
@@ -693,7 +693,7 @@
     {
       "id": 54,
       "name": "ovs_upcall_latency_summary_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -706,7 +706,7 @@
     {
       "id": 55,
       "name": "ovs_upcall_latency_summary_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -719,7 +719,7 @@
     {
       "id": 56,
       "name": "ovs_upcall_latency_summary_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -732,7 +732,7 @@
     {
       "id": 57,
       "name": "ovs_upcall_latency_summary_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -745,7 +745,7 @@
     {
       "id": 58,
       "name": "ovs_upcall_latency_summary_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -758,7 +758,7 @@
     {
       "id": 59,
       "name": "ovs_upcall_latency_summary_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_upcall_latency_summary.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp --interval 1",
       "script": "ovs_upcall_latency_summary.py",
       "category": "ovs",
       "environment": "vm",
@@ -771,7 +771,7 @@
     {
       "id": 60,
       "name": "ovs_userspace_megaflow_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -784,7 +784,7 @@
     {
       "id": 61,
       "name": "ovs_userspace_megaflow_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -797,7 +797,7 @@
     {
       "id": 62,
       "name": "ovs_userspace_megaflow_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -810,7 +810,7 @@
     {
       "id": 63,
       "name": "ovs_userspace_megaflow_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -823,7 +823,7 @@
     {
       "id": 64,
       "name": "ovs_userspace_megaflow_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -836,7 +836,7 @@
     {
       "id": 65,
       "name": "ovs_userspace_megaflow_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs_userspace_megaflow.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp",
       "script": "ovs_userspace_megaflow.py",
       "category": "ovs",
       "environment": "vm",
@@ -849,7 +849,7 @@
     {
       "id": 66,
       "name": "ovs_kernel_module_drop_monitor_rx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol tcp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -862,7 +862,7 @@
     {
       "id": 67,
       "name": "ovs_kernel_module_drop_monitor_tx_protocol_tcp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol tcp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol tcp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -875,7 +875,7 @@
     {
       "id": 68,
       "name": "ovs_kernel_module_drop_monitor_rx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol udp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -888,7 +888,7 @@
     {
       "id": 69,
       "name": "ovs_kernel_module_drop_monitor_tx_protocol_udp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol udp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol udp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -901,7 +901,7 @@
     {
       "id": 70,
       "name": "ovs_kernel_module_drop_monitor_rx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.77.253 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.83 --dst-ip 192.168.76.244 --protocol icmp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -914,7 +914,7 @@
     {
       "id": 71,
       "name": "ovs_kernel_module_drop_monitor_tx_protocol_icmp",
-      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.77.253 --dst-ip 192.168.77.83 --protocol icmp",
+      "command": "sudo python3 measurement-tools/ovs/ovs-kernel-module-drop-monitor.py --src-ip 192.168.76.244 --dst-ip 192.168.77.83 --protocol icmp",
       "script": "ovs-kernel-module-drop-monitor.py",
       "category": "ovs",
       "environment": "vm",
@@ -927,7 +927,7 @@
     {
       "id": 72,
       "name": "vhost_eventfd_count",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_eventfd_count.py",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_eventfd_count.py --interval 1",
       "script": "vhost_eventfd_count.py",
       "category": "kvm-virt-network/vhost-net",
       "environment": "vm",
@@ -937,123 +937,27 @@
     {
       "id": 73,
       "name": "vhost_queue_correlation_simple",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet81 --queue 0",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet126",
       "script": "vhost_queue_correlation_simple.py",
       "category": "kvm-virt-network/vhost-net",
       "environment": "vm",
-      "parameters": {
-        "queue": 0
-      },
+      "parameters": {},
       "duration": 10
     },
     {
       "id": 74,
-      "name": "vhost_queue_correlation_simple_queue_1",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet81 --queue 1",
-      "script": "vhost_queue_correlation_simple.py",
+      "name": "vhost_queue_correlation_details",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet126 --verbose",
+      "script": "vhost_queue_correlation_details.py",
       "category": "kvm-virt-network/vhost-net",
       "environment": "vm",
-      "parameters": {
-        "queue": 1
-      },
+      "parameters": {},
       "duration": 10
     },
     {
       "id": 75,
-      "name": "vhost_queue_correlation_simple_queue_2",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet81 --queue 2",
-      "script": "vhost_queue_correlation_simple.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 2
-      },
-      "duration": 10
-    },
-    {
-      "id": 76,
-      "name": "vhost_queue_correlation_simple_queue_3",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet81 --queue 3",
-      "script": "vhost_queue_correlation_simple.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 3
-      },
-      "duration": 10
-    },
-    {
-      "id": 77,
-      "name": "vhost_queue_correlation_simple",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_simple.py --device vnet81",
-      "script": "vhost_queue_correlation_simple.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {},
-      "duration": 10
-    },
-    {
-      "id": 78,
-      "name": "vhost_queue_correlation_details",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet81 --queue 0 --verbose",
-      "script": "vhost_queue_correlation_details.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 0
-      },
-      "duration": 10
-    },
-    {
-      "id": 79,
-      "name": "vhost_queue_correlation_details_queue_1",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet81 --queue 1 --verbose",
-      "script": "vhost_queue_correlation_details.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 1
-      },
-      "duration": 10
-    },
-    {
-      "id": 80,
-      "name": "vhost_queue_correlation_details_queue_2",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet81 --queue 2 --verbose",
-      "script": "vhost_queue_correlation_details.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 2
-      },
-      "duration": 10
-    },
-    {
-      "id": 81,
-      "name": "vhost_queue_correlation_details_queue_3",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet81 --queue 3 --verbose",
-      "script": "vhost_queue_correlation_details.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {
-        "queue": 3
-      },
-      "duration": 10
-    },
-    {
-      "id": 82,
-      "name": "vhost_queue_correlation_details",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_queue_correlation_details.py --device vnet81 --verbose",
-      "script": "vhost_queue_correlation_details.py",
-      "category": "kvm-virt-network/vhost-net",
-      "environment": "vm",
-      "parameters": {},
-      "duration": 10
-    },
-    {
-      "id": 83,
       "name": "vhost_buf_peek_stats",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_buf_peek_stats.py",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/vhost-net/vhost_buf_peek_stats.py --interval 1",
       "script": "vhost_buf_peek_stats.py",
       "category": "kvm-virt-network/vhost-net",
       "environment": "vm",
@@ -1061,9 +965,9 @@
       "duration": 10
     },
     {
-      "id": 84,
+      "id": 76,
       "name": "tun_ring_monitor_protocol_tcp",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet81 --protocol tcp --all",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet126 --protocol tcp --all",
       "script": "tun_ring_monitor.py",
       "category": "kvm-virt-network/tun",
       "environment": "vm",
@@ -1073,9 +977,9 @@
       "duration": 10
     },
     {
-      "id": 85,
+      "id": 77,
       "name": "tun_ring_monitor_protocol_udp",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet81 --protocol udp --all",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet126 --protocol udp --all",
       "script": "tun_ring_monitor.py",
       "category": "kvm-virt-network/tun",
       "environment": "vm",
@@ -1085,9 +989,9 @@
       "duration": 10
     },
     {
-      "id": 86,
+      "id": 78,
       "name": "tun_ring_monitor_protocol_icmp",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet81 --protocol icmp --all",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_ring_monitor.py --device vnet126 --protocol icmp --all",
       "script": "tun_ring_monitor.py",
       "category": "kvm-virt-network/tun",
       "environment": "vm",
@@ -1097,353 +1001,237 @@
       "duration": 10
     },
     {
-      "id": 87,
+      "id": 79,
       "name": "tun_to_vhost_queue_status_simple_summary",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet81 --queue 0",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet126",
       "script": "tun_to_vhost_queue_status_simple_summary.py",
       "category": "kvm-virt-network/tun",
       "environment": "vm",
+      "parameters": {},
+      "duration": 10
+    },
+    {
+      "id": 80,
+      "name": "tun_to_vhost_queue_stats_full_summary",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet126",
+      "script": "tun_to_vhost_queue_stats_full_summary.py",
+      "category": "kvm-virt-network/tun",
+      "environment": "vm",
+      "parameters": {},
+      "duration": 10
+    },
+    {
+      "id": 81,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43278_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43278 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
       "parameters": {
-        "queue": 0
+        "vhost_pid": "43278",
+        "subcategory": "rx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 82,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43278_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43278 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43278",
+        "subcategory": "tx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 83,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43279_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43279 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43279",
+        "subcategory": "rx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 84,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43279_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43279 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43279",
+        "subcategory": "tx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 85,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43280_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43280 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43280",
+        "subcategory": "rx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 86,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43280_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43280 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43280",
+        "subcategory": "tx"
+      },
+      "duration": 10
+    },
+    {
+      "id": 87,
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43281_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43281 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
+      "environment": "vm",
+      "parameters": {
+        "vhost_pid": "43281",
+        "subcategory": "rx"
       },
       "duration": 10
     },
     {
       "id": 88,
-      "name": "tun_to_vhost_queue_status_simple_summary_queue_1",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet81 --queue 1",
-      "script": "tun_to_vhost_queue_status_simple_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43281_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43281 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 1
+        "vhost_pid": "43281",
+        "subcategory": "tx"
       },
       "duration": 10
     },
     {
       "id": 89,
-      "name": "tun_to_vhost_queue_status_simple_summary_queue_2",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet81 --queue 2",
-      "script": "tun_to_vhost_queue_status_simple_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43282_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43282 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 2
+        "vhost_pid": "43282",
+        "subcategory": "rx"
       },
       "duration": 10
     },
     {
       "id": 90,
-      "name": "tun_to_vhost_queue_status_simple_summary_queue_3",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet81 --queue 3",
-      "script": "tun_to_vhost_queue_status_simple_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43282_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43282 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 3
+        "vhost_pid": "43282",
+        "subcategory": "tx"
       },
       "duration": 10
     },
     {
       "id": 91,
-      "name": "tun_to_vhost_queue_status_simple_summary",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_status_simple_summary.py --device vnet81",
-      "script": "tun_to_vhost_queue_status_simple_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43283_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43283 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
-      "parameters": {},
+      "parameters": {
+        "vhost_pid": "43283",
+        "subcategory": "rx"
+      },
       "duration": 10
     },
     {
       "id": 92,
-      "name": "tun_to_vhost_queue_stats_full_summary",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet81 --queue 0",
-      "script": "tun_to_vhost_queue_stats_full_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43283_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43283 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 0
+        "vhost_pid": "43283",
+        "subcategory": "tx"
       },
       "duration": 10
     },
     {
       "id": 93,
-      "name": "tun_to_vhost_queue_stats_full_summary_queue_1",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet81 --queue 1",
-      "script": "tun_to_vhost_queue_stats_full_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43284_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43284 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 1
+        "vhost_pid": "43284",
+        "subcategory": "rx"
       },
       "duration": 10
     },
     {
       "id": 94,
-      "name": "tun_to_vhost_queue_stats_full_summary_queue_2",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet81 --queue 2",
-      "script": "tun_to_vhost_queue_stats_full_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43284_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43284 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 2
+        "vhost_pid": "43284",
+        "subcategory": "tx"
       },
       "duration": 10
     },
     {
       "id": 95,
-      "name": "tun_to_vhost_queue_stats_full_summary_queue_3",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet81 --queue 3",
-      "script": "tun_to_vhost_queue_stats_full_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43285_subcategory_rx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43285 --category data --subcategory rx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
       "parameters": {
-        "queue": 3
+        "vhost_pid": "43285",
+        "subcategory": "rx"
       },
       "duration": 10
     },
     {
       "id": 96,
-      "name": "tun_to_vhost_queue_stats_full_summary",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/tun/tun_to_vhost_queue_stats_full_summary.py --device vnet81",
-      "script": "tun_to_vhost_queue_stats_full_summary.py",
-      "category": "kvm-virt-network/tun",
+      "name": "kvm_irqfd_stats_summary_vhost_pid_43285_subcategory_tx",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --vhost-pid 43285 --category data --subcategory tx",
+      "script": "kvm_irqfd_stats_summary.py",
+      "category": "kvm-virt-network/kvm",
       "environment": "vm",
-      "parameters": {},
+      "parameters": {
+        "vhost_pid": "43285",
+        "subcategory": "tx"
+      },
       "duration": 10
     },
     {
       "id": 97,
-      "name": "virtnet_poll_monitor",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/virtio-net/virtnet_poll_monitor.py",
-      "script": "virtnet_poll_monitor.py",
-      "category": "kvm-virt-network/virtio-net",
-      "environment": "vm",
-      "parameters": {},
-      "duration": 10
-    },
-    {
-      "id": 98,
-      "name": "virtnet_irq_monitor",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/virtio-net/virtnet_irq_monitor.py",
-      "script": "virtnet_irq_monitor.py",
-      "category": "kvm-virt-network/virtio-net",
-      "environment": "vm",
-      "parameters": {},
-      "duration": 10
-    },
-    {
-      "id": 99,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11317_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11317 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11317",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 100,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11317_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11317 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11317",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 101,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11318_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11318 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11318",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 102,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11318_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11318 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11318",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 103,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11319_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11319 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11319",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 104,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11319_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11319 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11319",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 105,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11320_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11320 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11320",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 106,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11320_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11320 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11320",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 107,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11321_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11321 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11321",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 108,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11321_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11321 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11321",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 109,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11322_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11322 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11322",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 110,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11322_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11322 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11322",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 111,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11323_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11323 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11323",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 112,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11323_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11323 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11323",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 113,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11325_subcategory_rx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11325 --category data --subcategory rx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11325",
-        "subcategory": "rx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 114,
-      "name": "kvm_irqfd_stats_summary_vhost_pid_11325_subcategory_tx",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --vhost-pid 11325 --category data --subcategory tx",
-      "script": "kvm_irqfd_stats_summary.py",
-      "category": "kvm-virt-network/kvm",
-      "environment": "vm",
-      "parameters": {
-        "vhost_pid": "11325",
-        "subcategory": "tx"
-      },
-      "duration": 10
-    },
-    {
-      "id": 115,
       "name": "kvm_irqfd_stats_summary",
-      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 11310 --interval 5 --category control",
+      "command": "sudo python3 measurement-tools/kvm-virt-network/kvm/kvm_irqfd_stats_summary.py 43272 --interval 1 --category control",
       "script": "kvm_irqfd_stats_summary.py",
       "category": "kvm-virt-network/kvm",
       "environment": "vm",

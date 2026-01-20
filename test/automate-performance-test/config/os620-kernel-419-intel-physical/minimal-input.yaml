@@ -13,18 +13,18 @@ nodes:
     role: "host"
 
   host-client:
-    ssh: "smartx@192.168.70.34"
+    ssh: "smartx@192.168.70.32"
     workdir: "/home/smartx/lcc"
     role: "host"
 
   # VM nodes
   vm-server:
-    ssh: "root@192.168.77.253"
+    ssh: "root@192.168.76.244"
     workdir: "/root/lcc"
     role: "vm"
     host_ref: "host-server"
     uuid: "a8366b2a-a709-4e88-ba57-128681bd1efb"
-    test_ip: "192.168.77.253"
+    test_ip: "192.168.76.244"
 
   vm-client:
     ssh: "root@192.168.77.83"

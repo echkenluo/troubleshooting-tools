@@ -13,18 +13,19 @@ This is the main Claude configuration file. Additional context-specific memory f
 
 Custom agents are defined in `.claude/agents/`:
 
-| Agent | Trigger | Purpose |
-|-------|---------|---------|
-| `research-agent` | Auto | Research: source code analysis, web search, documentation, best practices |
-| `prd-agent` | Explicit | Create IEEE 830 requirements documents |
-| `design-agent` | Explicit | Create IEEE 1016 design documents (HLD/LLD) |
-| `development-agent` | Explicit | Implement code following project conventions |
-| `testing-agent` | Explicit | Execute tests on remote environments |
-| `debug-agent` | Explicit | Add debug instrumentation, diagnose issues |
+| Agent                 | Trigger  | Purpose                                                                   |
+| --------------------- | -------- | ------------------------------------------------------------------------- |
+| `research-agent`    | Auto     | Research: source code analysis, web search, documentation, best practices |
+| `prd-agent`         | Explicit | Create IEEE 830 requirements documents                                    |
+| `design-agent`      | Explicit | Create IEEE 1016 design documents (HLD/LLD)                               |
+| `development-agent` | Explicit | Implement code following project conventions                              |
+| `testing-agent`     | Explicit | Execute tests on remote environments                                      |
+| `debug-agent`       | Explicit | Add debug instrumentation, diagnose issues                                |
 
 **Orchestration Workflow**: `.claude/workflows/debug-fix-workflow.md`
 
 When user requests debugging or fixing a tool, follow the debug-fix workflow:
+
 1. **debug-agent**: Add debug_inc() instrumentation or analyze existing debug output
 2. **testing-agent**: Run tests, collect debug statistics
 3. **Iterate**: debug-agent analyzes stats, adds more debug or returns diagnosis
@@ -90,15 +91,18 @@ measurement-tools/
 ### Traffic Analyzer Project (Under Development)
 
 **Location**: `traffic-analyzer/` contains three subdirectories:
+
 - **traffic-analyzer-claude/**: Target implementation location (currently empty - awaiting implementation)
 - **traffic-analyzer-kimi/**: Kimi AI-assisted research and prototypes
 - **traffic-analyzer-original/**: Original analysis scripts and test data from real network issues
 
 **Documentation**:
+
 - **Design**: `docs/design/traffic-analyzer/claude/` (IEEE 1016 format)
 - **Requirements**: `docs/prd/traffic-analyzer/claude/traffic-analysis-requirements-v3.0.md` (IEEE 830 format)
 
 **Two Independent Tools** (planned):
+
 1. **PCAP Analyzer**: Packet-level analysis using tshark (Summary/Details/Analysis modes)
 2. **TCP Socket Analyzer**: Kernel socket state analysis from eBPF data (Summary/Detailed/Pipeline modes)
 
@@ -107,12 +111,14 @@ measurement-tools/
 ### Test Framework
 
 **Location**: `test/` directory contains three subdirectories:
+
 - **workflow/**: Specification-driven test framework (YAML specs, test cases, results)
 - **automate-performance-test/**: Performance test automation scripts and analysis
 - **debug/**: Debug utilities and tools
 - **tools/**: Shared test utilities
 
 **Test Framework Pattern**:
+
 - **Specification-driven**: Test specs (YAML) define parameter matrices
 - **Remote execution**: Tools run via SSH on test servers
 - **Results collection**: Stored in `test/workflow/result/`
@@ -122,14 +128,15 @@ measurement-tools/
 ### eBPF Tool Patterns
 
 1. **Tool Arguments**: Consistent argparse pattern across tools
+
    - `--src-ip`, `--dst-ip`: Source and destination IP addresses
    - `--protocol`: Protocol type (tcp, udp, icmp)
    - `--direction`: Traffic direction (rx, tx)
    - `--phy-interface`: Physical interface name
    - `--vm-interface`: Virtual machine interface name
    - `--debug`: Enable debug output
-
 2. **BCC Import Compatibility**: All tools use fallback pattern for `bcc`/`bpfcc` modules
+
    ```python
    #!/usr/bin/env python
    try:
@@ -137,7 +144,6 @@ measurement-tools/
    except ImportError:
        from bpfcc import BPF
    ```
-
 3. **Data Flow**: eBPF kernel program → BPF maps → Python userspace processing → stdout
 
 ## Virtualized Network Stack
@@ -171,6 +177,7 @@ VM Network Interface
 **IMPORTANT**: See `claude_local_coding.md` for complete guidelines
 
 Key rules:
+
 - Use `#!/usr/bin/env python` for Python 2/3 compatibility
 - **Forbidden**: Emojis in print/log statements
 - **Forbidden**: Chinese characters in comments/print/log
@@ -181,6 +188,7 @@ Key rules:
 ### Documentation Standards
 
 **NEVER create documentation files unless explicitly requested**. This includes:
+
 - No proactive creation of README.md files
 - No markdown documentation files
 - No design documents without explicit user request
@@ -190,6 +198,7 @@ Key rules:
 ### Testing Requirements
 
 See `claude_local_test.md` for environment details:
+
 - **Virtualization Host**: Physical server testing
 - **Virtualization Guest**: VM testing
 - Python 2 (el7 with `python-bcc`) or Python 3 (oe1 with `python3-bpfcc`)
@@ -236,6 +245,33 @@ docs/
 
 1. **Development Team**: Configure tracing parameters, analyze complex execution paths
 2. **Field Support Team**: Collect logs following documented procedures, forward to dev team
+
+
+## planning-with-files Directory Convention
+
+When using the planning-with-files skill for complex tasks:
+
+1. **Create task directory**: `docs/planning-with-files/{task-name}/`
+2. **All planning files go in this directory**:
+   - `task_plan.md` - Phase tracking and decisions
+   - `findings.md` - Research and discoveries
+   - `progress.md` - Session log and test results
+3. **Task name should be kebab-case** (e.g., `tcp-udp-drop-detector`)
+
+Example structure:
+```
+docs/planning-with-files/
+├── tcp-udp-drop-detector/
+│   ├── task_plan.md
+│   ├── findings.md
+│   └── progress.md
+└── traffic-analyzer-impl/
+    ├── task_plan.md
+    ├── findings.md
+    └── progress.md
+```
+
+**Important**: Always create files in the task subdirectory, never in the project root. 
 
 ## Reference Materials
 
