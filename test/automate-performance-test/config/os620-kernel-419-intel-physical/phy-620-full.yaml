@@ -7,11 +7,11 @@ ssh:
       user: smartx
       workdir: /home/smartx/lcc
     host-client:
-      host: 192.168.70.34
+      host: 192.168.70.32
       user: smartx
       workdir: /home/smartx/lcc
     vm-server:
-      host: 192.168.77.253
+      host: 192.168.76.244
       user: root
       workdir: /root/lcc
     vm-client:
@@ -27,43 +27,62 @@ environments:
       interface: port-mgt
     client:
       ssh_ref: host-client
-      test_ip: 192.168.70.34
+      test_ip: 192.168.70.32
       interface: port-mgt
     network_config:
       server_ip: 192.168.70.31
-      client_ip: 192.168.70.34
+      client_ip: 192.168.70.32
       internal_interface: port-mgt
-      physical_interface: enp24s0f0np0
+      server_physical_interface: enp24s0f0np0
+      server_physical_nic_members: []
+      client_physical_interface: enp24s0f0np0
+      client_physical_nic_members: []
   vm:
     description: VM-to-VM testing on phy-620
     server:
       ssh_ref: vm-server
-      test_ip: 192.168.77.253
+      test_ip: 192.168.76.244
       interface: ens4
-      vm_interface: vnet81
+      vm_interface: vnet126
       physical_host_ref: host-server
     client:
       ssh_ref: vm-client
       test_ip: 192.168.77.83
       interface: ens4
-      vm_interface: vnet46
+      vm_interface: vnet35
       physical_host_ref: host-client
     network_config:
-      server_ip: 192.168.77.253
+      server_ip: 192.168.76.244
       client_ip: 192.168.77.83
-      physical_interface: enp24s0f0np0
-      vm_interface: vnet81
+      server_physical_interface: enp24s0f0np0
+      server_physical_nic_members: []
+      server_vm_interface: vnet126
+      client_physical_interface: enp24s0f0np0
+      client_physical_nic_members: []
+      client_vm_interface: vnet35
     kvm_config:
-      qemu_pid: '11310'
-      vhost_pids:
-      - '11317'
-      - '11318'
-      - '11319'
-      - '11320'
-      - '11321'
-      - '11322'
-      - '11323'
-      - '11325'
+      server:
+        qemu_pid: '43272'
+        vhost_pids:
+        - '43278'
+        - '43279'
+        - '43280'
+        - '43281'
+        - '43282'
+        - '43283'
+        - '43284'
+        - '43285'
+      client:
+        qemu_pid: '22529'
+        vhost_pids:
+        - '22550'
+        - '22551'
+        - '22552'
+        - '22554'
+        - '22555'
+        - '22556'
+        - '22557'
+        - '22558'
 paths:
   tools_dir: measurement-tools
   results_dir: ebpf-test-results
@@ -116,15 +135,16 @@ tools:
           - udp
       - script: system_network_latency_summary.py
         template: sudo python3 {path} --phy-interface {PHY_INTERFACE} --src-ip {SRC_IP}
-          --dst-ip {DST_IP} --direction {direction} --protocol {protocol}
+          --dst-ip {DST_IP} --direction {direction} --protocol {protocol} --interval
+          1
         parameters:
           protocol:
           - tcp
           - udp
       - script: system_network_icmp_rtt.py
         template: sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --direction
-          {direction} --phy-iface1 {PHY_INTERFACE} --latency-us {latency_threshold}
-        latency_threshold: 100
+          {direction} --phy-interface {PHY_INTERFACE} --latency-ms {latency_threshold_ms}
+        latency_threshold_ms: 1
         parameters:
           protocol:
           - icmp
@@ -141,7 +161,7 @@ tools:
       - script: vm_network_latency_summary.py
         template: sudo python3 {path} --vm-interface {VM_INTERFACE} --phy-interface
           {PHY_INTERFACE} --direction {direction} --src-ip {SRC_IP} --dst-ip {DST_IP}
-          --protocol {protocol}
+          --protocol {protocol} --interval 1
         parameters:
           protocol:
           - tcp
@@ -187,14 +207,14 @@ tools:
           - icmp
       - script: kernel_drop_stack_stats_summary_all.py
         template: sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --l4-protocol
-          {protocol}
+          {protocol} --interval 1
         parameters:
           protocol:
           - tcp
           - udp
           - icmp
       - script: qdisc_drop_trace.py
-        template: sudo python3 {path}
+        template: sudo python3 {path} --interval 1 --summary
     linux-network-stack:
       environment: host
       directions:
@@ -231,7 +251,7 @@ tools:
       tools:
       - script: ovs_upcall_latency_summary.py
         template: sudo python3 {path} --src-ip {SRC_IP} --dst-ip {DST_IP} --protocol
-          {protocol}
+          {protocol} --interval 1
         parameters:
           protocol:
           - tcp
@@ -257,29 +277,13 @@ tools:
       environment: vm
       tools:
       - script: vhost_eventfd_count.py
-        template: sudo python3 {path}
-      - script: vhost_queue_correlation_simple.py
-        template: sudo python3 {path} --device {VM_INTERFACE} --queue {queue}
-        parameters:
-          queue:
-          - 0
-          - 1
-          - 2
-          - 3
+        template: sudo python3 {path} --interval 1
       - script: vhost_queue_correlation_simple.py
         template: sudo python3 {path} --device {VM_INTERFACE}
       - script: vhost_queue_correlation_details.py
-        template: sudo python3 {path} --device {VM_INTERFACE} --queue {queue} --verbose
-        parameters:
-          queue:
-          - 0
-          - 1
-          - 2
-          - 3
-      - script: vhost_queue_correlation_details.py
         template: sudo python3 {path} --device {VM_INTERFACE} --verbose
       - script: vhost_buf_peek_stats.py
-        template: sudo python3 {path}
+        template: sudo python3 {path} --interval 1
     kvm-virt-network/tun:
       environment: vm
       tools:
@@ -292,58 +296,34 @@ tools:
           - udp
           - icmp
       - script: tun_to_vhost_queue_status_simple_summary.py
-        template: sudo python3 {path} --device {VM_INTERFACE} --queue {queue}
-        parameters:
-          queue:
-          - 0
-          - 1
-          - 2
-          - 3
-      - script: tun_to_vhost_queue_status_simple_summary.py
         template: sudo python3 {path} --device {VM_INTERFACE}
       - script: tun_to_vhost_queue_stats_full_summary.py
-        template: sudo python3 {path} --device {VM_INTERFACE} --queue {queue}
-        parameters:
-          queue:
-          - 0
-          - 1
-          - 2
-          - 3
-      - script: tun_to_vhost_queue_stats_full_summary.py
         template: sudo python3 {path} --device {VM_INTERFACE}
-    kvm-virt-network/virtio-net:
-      environment: vm
-      tools:
-      - script: virtnet_poll_monitor.py
-        template: sudo python3 {path}
-      - script: virtnet_irq_monitor.py
-        template: sudo python3 {path}
     kvm-virt-network/kvm:
       environment: vm
       tools:
       - script: kvm_irqfd_stats_summary.py
-        template: sudo python3 {path} {QEMU_PID} --interval 5 --vhost-pid {vhost_pid}
+        template: sudo python3 {path} {QEMU_PID} --interval 1 --vhost-pid {vhost_pid}
           --category data --subcategory {subcategory}
         parameters:
           vhost_pid:
-          - '11317'
-          - '11318'
-          - '11319'
-          - '11320'
-          - '11321'
-          - '11322'
-          - '11323'
-          - '11325'
+          - '43278'
+          - '43279'
+          - '43280'
+          - '43281'
+          - '43282'
+          - '43283'
+          - '43284'
+          - '43285'
           subcategory:
           - rx
           - tx
       - script: kvm_irqfd_stats_summary.py
-        template: sudo python3 {path} {QEMU_PID} --interval 5 --category control
+        template: sudo python3 {path} {QEMU_PID} --interval 1 --category control
 performance_tests:
   throughput:
     single_stream:
       duration: 10
-      target_bw: 1G
     multi_stream:
       duration: 10
       streams: 4
@@ -352,7 +332,10 @@ performance_tests:
     tcp_rr: {}
     udp_rr: {}
   pps:
-    duration: 10
-    single_stream: {}
+    single_stream:
+      duration: 10
+      target_bw: 1G
     multi_stream:
+      duration: 10
       streams: 4
+      target_bw: 1G
