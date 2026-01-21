@@ -176,6 +176,7 @@ print("Verbose mode: {}".format('ON' if args.verbose else 'OFF'))
 print("Stack trace: {}".format('OFF' if args.no_stack_trace else 'ON'))
 print("Normal pattern filter: {}".format('OFF' if args.disable_normal_filter else 'ON'))
 print("-" * 80)
+sys.stdout.flush()
 
 src_ip_hex = ip_to_hex(src_ip)
 dst_ip_hex = ip_to_hex(dst_ip)
@@ -369,8 +370,8 @@ static inline bool interface_filter(struct sk_buff *skb) {
     return true;
 }
 
-int trace_kfree_skb(struct pt_regs *ctx) {
-    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM1(ctx);
+TRACEPOINT_PROBE(skb, kfree_skb) {
+    struct sk_buff *skb = (struct sk_buff *)args->skbaddr;
     if (skb == NULL) return 0;
     
     // Apply interface filter first (most efficient)
@@ -384,7 +385,7 @@ int trace_kfree_skb(struct pt_regs *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     data.pid = pid_tgid & 0xFFFFFFFF;
     data.tgid = pid_tgid >> 32;
-    data.stack_id = stack_traces.get_stackid(ctx, BPF_F_REUSE_STACKID);
+    data.stack_id = stack_traces.get_stackid(args, BPF_F_REUSE_STACKID);
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
     
     // Get execution context information
@@ -654,7 +655,7 @@ int trace_kfree_skb(struct pt_regs *ctx) {
         }
     }
     
-    packet_drops.perf_submit(ctx, &data, sizeof(data));
+    packet_drops.perf_submit(args, &data, sizeof(data));
     return 0;
 }
 """
@@ -693,10 +694,7 @@ if interface_filter:
             target_name.name = str(interface_filter).encode('utf-8')
     interface_map[0] = target_name
 
-# Attach the kprobe
-b.attach_kprobe(event="kfree_skb", fn_name="trace_kfree_skb")
-
-# No debug code needed
+# Tracepoint is automatically attached via TRACEPOINT_PROBE macro
 
 # Define ctypes structure for packet data
 class PacketData(ct.Structure):
@@ -783,7 +781,7 @@ def print_packet_event(cpu, data, size):
     """Print packet drop event"""
     global b
     event = ct.cast(data, ct.POINTER(PacketData)).contents
-    
+
     # Skip normal patterns if not verbose
     if not args.disable_normal_filter and event.stack_id > 0:
         try:
@@ -923,13 +921,15 @@ def print_packet_event(cpu, data, size):
                 print("  <stack_traces table not found>")
             except Exception as e:
                 print("  <Error retrieving stack trace: {}>".format(e))
-    
+
     print("-" * 80)
+    sys.stdout.flush()
 
 # Register the callback
 b["packet_drops"].open_perf_buffer(print_packet_event)
 
 print("Starting packet drop monitoring... Press Ctrl+C to stop")
+sys.stdout.flush()
 
 # Main event loop
 try:
