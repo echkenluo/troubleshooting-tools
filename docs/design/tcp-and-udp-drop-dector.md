@@ -75,15 +75,47 @@ Response Direction (dst→src):
 
 3. **Packet Identification Strategy**:
    TCP packets are uniquely identified using a 6-tuple key:
-   `{src_ip, dst_ip, src_port, dst_port, tcp_seq, payload_len}`
+   `{src_ip, dst_ip, src_port, dst_port, expected_ack, payload_len}`
 
-   This seq-based approach provides precise packet tracking:
-   - Each TCP segment has a unique sequence number
-   - Payload length distinguishes segments with same seq (e.g., retransmits)
-   - No time window ambiguity - exact packet matching
+   The `expected_ack` field is calculated differently for Request and Reply:
+   - **Request**: `expected_ack = tcp_seq + payload_len + SYN_adj + FIN_adj`
+   - **Reply**: `expected_ack = tcp_ack_seq` (used to match Request's expected_ack)
 
-   Note: Request/response are tracked independently by their own seq numbers,
-   not by ACK matching. This simplifies implementation while maintaining accuracy.
+   This approach enables bidirectional tracking:
+   - Request packet creates entry with calculated expected_ack
+   - Reply packet's ack_seq matches the Request's expected_ack
+   - SYN and FIN flags each consume 1 sequence number
+
+4. **TCP Cumulative ACK Limitation**:
+
+   **IMPORTANT**: TCP uses cumulative ACK, meaning one ACK confirms all data
+   up to a certain sequence number. This affects bidirectional tracking:
+
+   ```
+   Scenario: Server sends 3 packets to client
+     Packet 1: seq=100, len=100 → expected_ack=200
+     Packet 2: seq=200, len=100 → expected_ack=300
+     Packet 3: seq=300, len=100 → expected_ack=400
+
+   Client receives all 3, sends ONE ACK:
+     ACK = 400 (confirms all data up to byte 400)
+
+   Result:
+     - Packet 3 matches (expected_ack=400 == ack_seq=400) ✓
+     - Packet 1 & 2 have NO matching Reply ✗
+   ```
+
+   **Impact by Traffic Pattern**:
+   | Traffic Pattern | Bidirectional Mode | Internal-Only Mode |
+   |-----------------|-------------------|-------------------|
+   | Long connection, continuous flow (iperf3) | Most packets match | All packets match |
+   | Short connection, burst data (HTTP GET) | Only last packet matches | All packets match |
+   | Request-response (single packet each) | All packets match | All packets match |
+
+   **Recommended Usage**:
+   - Use `--internal-only` for bulk TCP traffic (file transfers, streaming)
+   - Use default bidirectional mode for request-response protocols
+   - SYN/SYN-ACK handshake always matches correctly in both modes
 
 ### BPF Probes
 
@@ -309,3 +341,516 @@ In the Linux kernel, TCP sequence numbers are assigned at `tcp_sendmsg()` before
 | NIC driver TX | Post | Physical packets |
 
 **Recommendation**: Track at `dev_queue_xmit` entry for simplest packet identification while still capturing internal drops.
+
+---
+
+## Code Review Summary (2026-01-21)
+
+### Overall Assessment
+
+| Tool | Drop Tracking | Latency Tracking | Rating |
+|------|--------------|------------------|--------|
+| ICMP | Complete | Complete | ⭐⭐⭐⭐⭐ |
+| UDP | Complete | Internal only | ⭐⭐⭐⭐ |
+| TCP | Limited | Limited | ⭐⭐⭐ |
+
+---
+
+## UDP Implementation Review
+
+### Data Fields Analysis
+
+| Field | Purpose | Sufficient |
+|-------|---------|------------|
+| `ts[RX]`, `ts[TX]` | Timestamps | ✅ Drop tracking |
+| `frag_count_rx`, `frag_count_tx` | Fragment counts | ✅ Partial drop detection |
+| `has_first_frag`, `has_last_frag` | Fragment completeness | ✅ Group integrity |
+| `ip_id` | Packet identifier | ✅ Cross-host correlation |
+| `sport`, `dport` | Ports | ✅ Application layer correlation |
+| `total_payload` | Payload size | ✅ Auxiliary validation |
+
+### Drop Tracking Capability
+
+**Host Internal Drop Detection**: ✅ Fully supported
+- Has `ts[RX]` but no `ts[TX]` → Internal drop
+- Fragment count mismatch (`frag_count_rx != frag_count_tx`) → Partial fragment drop
+
+**Cross-Host Physical Network Drop Detection**: ✅ Data sufficient
+- Sender side: `ts[TX]` + `ip_id` + `sport:dport`
+- Receiver side: `ts[RX]` + `ip_id` + `sport:dport`
+- Correlation method: Match by `{sip, dip, ip_id, sport, dport}` 5-tuple
+- **Requires**: Offline merge of data from both hosts
+
+### Latency Tracking Capability
+
+| Scenario | Capability | Issue |
+|----------|------------|-------|
+| Host internal latency | ✅ `ts[TX] - ts[RX]` | None |
+| Cross-host end-to-end latency | ❌ | Clock not synchronized |
+
+**Cross-Host Latency Challenge**:
+- Sender `ts[TX]` and receiver `ts[RX]` use different host clocks
+- NTP synchronization error typically 1-10ms
+- Unacceptable for measuring <1ms internal latency
+
+**Potential Solutions**:
+1. **PTP precise clock sync**: Requires hardware support, error can be <1μs
+2. **RTT mode**: sender→receiver→sender, calculate RTT/2
+3. **Relative latency analysis**: Compare latency trends on same host, not absolute values
+
+---
+
+## TCP Implementation Review
+
+### seq+len ACK Matching Theory
+
+**Theoretical Basis** (RFC 793):
+```
+Sender: sends seq=X, payload_len=N
+Receiver: replies ack_seq = X + N (confirms bytes X to X+N-1)
+```
+
+**Behavior with GSO/GRO Enabled**:
+```
+VM sends: Large packet (64KB GSO)
+    ↓
+Host TX: dev_queue_xmit sees large packet (pre-GSO)
+    ↓
+Physical NIC: Hardware segmentation (post-GSO)
+    ↓
+Physical network transmission
+    ↓
+Receiver physical NIC: Receives multiple small packets
+    ↓
+Receiver Host RX: GRO merges to large packet (netif_receive_skb)
+    ↓
+VM receives: Large packet
+```
+
+**Key Insight**:
+- Both sender `dev_queue_xmit` and receiver `netif_receive_skb` see **large packets** (pre-GSO/post-GRO)
+- seq+len matching should theoretically work ✅
+
+### iperf3 Traffic Analysis
+
+Based on tcpdump analysis, with GSO/GRO enabled during iperf3:
+- Sender sends large packets (65KB)
+- Receiver sends independent ACK for each large packet
+
+```
+Out: seq 241158:306318, length 65160 → expected_ack = 306318
+Out: seq 306318:371478, length 65160 → expected_ack = 371478
+Out: seq 371478:372230, length 752   → expected_ack = 372230
+
+In: ack 306318  ← Matches Packet 1 ✓
+In: ack 371478  ← Matches Packet 2 ✓
+In: ack 372230  ← Matches Packet 3 ✓
+```
+
+**Conclusion**: In normal GSO/GRO configuration, each large packet should match its Reply.
+
+### Troubleshooting Match Failures
+
+If test shows match failures:
+
+1. **Direction Issue**: Verify `src-ip`/`dst-ip` setting
+   - If `src-ip` = server, `dst-ip` = client
+   - "Request" = ACK packets from server→client (small)
+   - "Reply" = data packets from client→server (large)
+   - ACK matching logic doesn't apply in this case
+
+2. **Environment**: Verify detector runs on correct host (hypervisor with data flow)
+
+3. **Debug**: Use `--verbose` to check actual expected_ack and ack_seq values
+
+4. **Validate**: Compare with tcpdump data to verify matching logic
+
+### Complex TCP Scenarios
+
+**Streaming Protocols** (HTTP streaming, video, etc.):
+- Data is continuously sent one-way
+- ACKs are cumulative
+
+**Current Implementation Limitations**:
+- Only last packet of each burst matches Reply
+- Intermediate packets report as "external drop" after timeout (false positive)
+
+**Solutions**:
+| Solution | Status | Description |
+|----------|--------|-------------|
+| `--internal-only` mode | ✅ Implemented | Only track RX→TX, skip Reply |
+| ACK range matching | ❌ Not implemented | If `ack_seq >= expected_ack`, treat as match |
+| Pure drop detection | ❌ Not implemented | Use TCP retransmission as drop indicator |
+
+---
+
+## Future Improvement Suggestions
+
+### High Priority
+
+1. **BPF API Update**: Change `bpf_probe_read` to `bpf_probe_read_kernel` for better compatibility on kernel 4.19+
+
+2. **UDP Cross-Host Correlation Tool**: Create offline tool to merge data from both hosts
+   ```
+   Input: sender.log + receiver.log
+   Output: end-to-end drop analysis
+   Correlation key: {sip, dip, ip_id, sport, dport}
+   ```
+
+3. **Documentation**: Clearly document TCP detector's applicable scenarios and limitations
+
+### Medium Priority
+
+4. **TCP Retransmission Tracking Mode**: More reliable drop detection
+
+   **Principle**: TCP retransmission is the most reliable drop indicator - when sender retransmits,
+   it means the original packet was definitely lost (or ACK was lost).
+
+   **Implementation Approach**:
+   ```
+   Probe points:
+     - kprobe:__tcp_retransmit_skb (kernel retransmission function)
+     - kprobe:tcp_retransmit_timer (RTO timeout retransmission)
+     - tracepoint:tcp:tcp_retransmit_skb (if available)
+
+   Data to capture:
+     - sk: socket pointer (identifies connection)
+     - seq: retransmitted sequence number
+     - end_seq: end of retransmitted data
+     - timestamp: when retransmission occurred
+   ```
+
+   **Advantages over current approach**:
+   | Aspect | Current ACK Matching | Retransmission Tracking |
+   |--------|---------------------|------------------------|
+   | Drop detection accuracy | May have false positives | 100% accurate |
+   | Cumulative ACK issue | Affected | Not affected |
+   | Works for bulk transfer | Limited | Full support |
+   | Latency measurement | Yes (RTT) | No (only drop detection) |
+
+   **Kernel code path** (`net/ipv4/tcp_output.c`):
+   ```c
+   // tcp_retransmit_skb() is called when:
+   // 1. RTO timer expires (no ACK received in time)
+   // 2. Fast retransmit (3 duplicate ACKs received)
+   // 3. SACK-based selective retransmit
+
+   int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
+   {
+       // skb->seq = starting sequence number
+       // TCP_SKB_CB(skb)->end_seq = ending sequence number
+       // This tells us exactly which bytes were retransmitted
+   }
+   ```
+
+   **Drop location inference**:
+   - If Request was seen at ReqTX but triggers retransmission → External drop
+   - If Request was NOT seen at ReqTX but retransmits → Internal drop (before TX)
+
+5. **ACK Range Matching**: Extend bidirectional mode to handle cumulative ACK
+
+   **Problem**: Current implementation uses exact match (`ack_seq == expected_ack`),
+   but TCP cumulative ACK means `ack_seq` confirms ALL data up to that point.
+
+   **Current behavior**:
+   ```
+   Packet 1: expected_ack = 200
+   Packet 2: expected_ack = 300
+   Packet 3: expected_ack = 400
+
+   ACK received: ack_seq = 400
+
+   Result: Only Packet 3 matches ✗
+   ```
+
+   **Proposed solution**: Range-based matching
+   ```
+   For each pending Request packet:
+       If ack_seq >= expected_ack:
+           Mark as matched (ACK confirms this packet was received)
+   ```
+
+   **Implementation changes**:
+   ```python
+   # Current: exact match
+   def find_matching_request(ack_seq):
+       return flow_map.get(ack_seq)  # Exact key lookup
+
+   # Proposed: range match
+   def find_matching_requests(ack_seq):
+       matched = []
+       for key, flow in flow_map.items():
+           if flow.expected_ack <= ack_seq:
+               matched.append(flow)
+       return matched
+   ```
+
+   **BPF implementation challenge**:
+   - BPF map lookup is O(1) with exact key
+   - Range matching requires iteration, which is expensive
+   - Possible solutions:
+     1. Move range matching to userspace (Python)
+     2. Use BPF array map with seq as index (limited range)
+     3. Accept the limitation and recommend `--internal-only` for bulk
+
+   **Trade-offs**:
+   | Aspect | Exact Match | Range Match |
+   |--------|-------------|-------------|
+   | Performance | O(1) lookup | O(n) iteration |
+   | Accuracy | Misses cumulative ACK | Handles all cases |
+   | BPF complexity | Simple | Complex or userspace |
+   | Memory | Single entry per packet | May match multiple |
+
+### Low Priority
+
+6. **TCP Timestamp RTT**: Use TCP timestamp option (RFC 7323)
+   ```
+   - tsval: send timestamp
+   - tsecr: echoed timestamp
+   - Receiver can calculate precise RTT
+   ```
+
+7. **SACK Analysis**: Use TCP SACK option for precise drop info
+
+   **Background**: TCP Selective Acknowledgment (SACK, RFC 2018) allows receiver to
+   report exactly which segments were received, even if they arrived out of order.
+
+   **SACK Option Format**:
+   ```
+   Kind: 5
+   Length: Variable (8n + 2 bytes, where n = number of blocks)
+
+   +--------+--------+
+   | Kind=5 | Length |
+   +--------+--------+--------+--------+
+   |     Left Edge of 1st Block        |
+   +--------+--------+--------+--------+
+   |    Right Edge of 1st Block        |
+   +--------+--------+--------+--------+
+   |              ...                  |
+   +--------+--------+--------+--------+
+   ```
+
+   **How SACK reveals drops**:
+   ```
+   Sender sends: seq 100-200, 200-300, 300-400, 400-500
+   Receiver gets: seq 100-200, 300-400, 400-500 (seq 200-300 lost)
+
+   Receiver sends ACK with:
+     - ack_seq = 200 (cumulative ACK up to hole)
+     - SACK blocks: [300-400], [400-500] (received after hole)
+
+   Sender knows:
+     - Bytes 0-200: confirmed received
+     - Bytes 200-300: MISSING (the gap before SACK blocks)
+     - Bytes 300-500: received (in SACK blocks)
+   ```
+
+   **Impact on current tracking**:
+
+   | Scenario | Without SACK Analysis | With SACK Analysis |
+   |----------|----------------------|-------------------|
+   | Packet 1 (seq 100-200) | ✅ ack_seq=200 matches | ✅ Same |
+   | Packet 2 (seq 200-300) | ❌ No ACK, timeout as "drop" | ✅ Identified as actual drop |
+   | Packet 3 (seq 300-400) | ❌ ack_seq=200 < expected(400) | ✅ In SACK block, received |
+   | Packet 4 (seq 400-500) | ❌ ack_seq=200 < expected(500) | ✅ In SACK block, received |
+
+   **Implementation approach**:
+   ```c
+   // Parse SACK option from TCP header
+   struct sack_block {
+       u32 left_edge;   // Start of received range
+       u32 right_edge;  // End of received range
+   };
+
+   static int parse_sack_option(struct tcphdr *tcp, struct sack_block *blocks, int max_blocks)
+   {
+       u8 *opt = (u8 *)(tcp + 1);
+       int opt_len = (tcp->doff * 4) - sizeof(*tcp);
+       int i = 0, num_blocks = 0;
+
+       while (i < opt_len && num_blocks < max_blocks) {
+           u8 kind = opt[i];
+           if (kind == 0) break;           // End of options
+           if (kind == 1) { i++; continue; } // NOP
+           if (kind == 5) {                // SACK
+               u8 len = opt[i + 1];
+               int n = (len - 2) / 8;      // Number of blocks
+               for (int j = 0; j < n && num_blocks < max_blocks; j++) {
+                   blocks[num_blocks].left_edge = ntohl(*(u32 *)&opt[i + 2 + j*8]);
+                   blocks[num_blocks].right_edge = ntohl(*(u32 *)&opt[i + 6 + j*8]);
+                   num_blocks++;
+               }
+           }
+           i += opt[i + 1];  // Skip to next option
+       }
+       return num_blocks;
+   }
+   ```
+
+   **Matching logic with SACK**:
+   ```python
+   def check_packet_status(expected_ack, ack_seq, sack_blocks):
+       # Check cumulative ACK first
+       if expected_ack <= ack_seq:
+           return "RECEIVED"
+
+       # Check if in any SACK block
+       for left, right in sack_blocks:
+           if left <= expected_ack <= right:
+               return "RECEIVED_OUT_OF_ORDER"
+
+       # Not in cumulative ACK or SACK blocks
+       return "POSSIBLY_DROPPED"
+   ```
+
+   **Advantages of SACK analysis**:
+   - Precise drop location: Know exactly which seq range was lost
+   - No false positives: Packets in SACK blocks are confirmed received
+   - Works with reordering: Distinguishes drop from out-of-order delivery
+
+   **Limitations**:
+   - Requires SACK negotiation (most modern TCP stacks enable by default)
+   - BPF stack limit: Parsing TCP options requires careful bounds checking
+   - Complexity: Option parsing adds code complexity
+
+8. **UDP PTP Latency Sync**: Hardware timestamp support for cross-host latency
+
+---
+
+## TX Probe Points Analysis
+
+### Linux TX Path and Probe Points
+
+```
+tcp_sendmsg() / udp_sendmsg()
+    ↓
+ip_queue_xmit() / ip_send_skb()
+    ↓
+ip_local_out() → ip_output() → ip_finish_output()
+    ↓
+neigh_output()
+    ↓
+dev_queue_xmit()                    ← [1] kprobe:dev_queue_xmit (BEFORE qdisc)
+    ↓
+__dev_queue_xmit()                  ← [2] kprobe:__dev_queue_xmit
+    ↓
+__dev_xmit_skb()
+    ↓
+qdisc->enqueue()                    ← qdisc 入队
+    ↓
+qdisc_run() → dequeue_skb()         ← 可能 requeue
+    ↓
+sch_direct_xmit()
+    ↓
+dev_hard_start_xmit()               ← [3] kprobe:dev_hard_start_xmit (AFTER qdisc)
+    ↓
+xmit_one()
+    ↓
+dev_queue_xmit_nit()                ← [4] kprobe:dev_queue_xmit_nit (tcpdump tap, BEFORE driver)
+    ↓
+trace_net_dev_start_xmit           ← tracepoint (BEFORE driver)
+    ↓
+netdev_start_xmit() → ndo_start_xmit()  ← Driver TX (queue to NIC ring)
+    ↓
+[driver returns]                    ← [5] tracepoint:net:net_dev_xmit (AFTER driver returns)
+    ↓
+[NIC DMA & actual TX]              ← Async, no probe point
+```
+
+### Probe Points Comparison
+
+| Probe Point | Position | qdisc delay | Driver call | Notes |
+|-------------|----------|-------------|-------------|-------|
+| `kprobe:dev_queue_xmit` | Before qdisc | ❌ | ❌ | Pre-qdisc entry |
+| `kprobe:__dev_queue_xmit` | Before qdisc | ❌ | ❌ | Internal function |
+| `kprobe:dev_hard_start_xmit` | After qdisc | ✅ | ❌ | Post-qdisc, pre-driver |
+| `kprobe:dev_queue_xmit_nit` | Before driver | ✅ | ❌ | tcpdump tap point |
+| `tracepoint:net:net_dev_xmit` | After driver returns | ✅ | ✅ | Driver queued to NIC |
+
+**Note**: `net_dev_xmit` fires after driver's `ndo_start_xmit()` returns, but actual packet
+transmission to wire is async (NIC DMA). No software probe can capture "on wire" moment.
+
+### Current Tool Inventory
+
+#### Tools using `kprobe:dev_queue_xmit` (Before qdisc)
+
+| Tool | Path | Purpose |
+|------|------|---------|
+| tcp_drop_detector.py | linux-network-stack/packet-drop/ | TCP drop detection |
+| udp_drop_detector.py | linux-network-stack/packet-drop/ | UDP drop detection |
+| icmp_drop_detector.py | linux-network-stack/packet-drop/ | ICMP drop detection |
+| system_network_latency_summary.py | performance/system-network/ | Host network latency |
+| system_network_latency_details.py | performance/system-network/ | Host network latency details |
+| system_network_icmp_rtt.py | performance/system-network/ | ICMP RTT measurement |
+| kernel_icmp_rtt.py | performance/system-network/ | Kernel ICMP RTT |
+| trace_dev_queue_xmit.bt | other/ | Debug tracing |
+
+#### Tools using `kprobe:__dev_queue_xmit` (Before qdisc, internal)
+
+| Tool | Path | Purpose |
+|------|------|---------|
+| vm_network_latency_details.py | performance/vm-network/ | VM network latency details |
+| tun-abnormal-gso-type.bt | kvm-virt-network/tun/ | TUN GSO debugging |
+
+#### Tools using `kprobe:dev_hard_start_xmit` (After qdisc)
+
+| Tool | Path | Purpose |
+|------|------|---------|
+| system_network_perfomance_metrics.py | performance/system-network/ | Host performance metrics |
+| vm_network_performance_metrics.py | performance/vm-network/ | VM performance metrics |
+| vm_network_latency_summary.py | performance/vm-network/ | VM network latency summary |
+
+#### Tools using `tracepoint:net:net_dev_xmit` (After driver returns)
+
+| Tool | Path | Purpose |
+|------|------|---------|
+| vm_pair_latency.py | performance/vm-network/vm_pair_latency/ | VM pair latency |
+| multi_vm_pair_latency.py | performance/vm-network/vm_pair_latency/ | Multi VM pair latency |
+| multi_vm_pair_latency_pairid.py | performance/vm-network/vm_pair_latency/ | Multi VM pair with ID |
+| vm_pair_gap.py | performance/vm-network/vm_pair_latency/vm_pair_latency_gap/ | VM pair gap analysis |
+| multi_port_gap.py | performance/vm-network/vm_pair_latency/vm_pair_latency_gap/ | Multi port gap |
+| multi_vm_pair_multi_port_gap.py | performance/vm-network/vm_pair_latency/vm_pair_latency_gap/ | Multi VM multi port gap |
+
+### Summary Statistics
+
+| Probe Point | Tool Count | qdisc | Driver | Position |
+|-------------|------------|-------|--------|----------|
+| `dev_queue_xmit` | 8 | ❌ | ❌ | Before qdisc |
+| `__dev_queue_xmit` | 2 | ❌ | ❌ | Before qdisc |
+| `dev_hard_start_xmit` | 3 | ✅ | ❌ | After qdisc |
+| `net_dev_xmit` tracepoint | 6 | ✅ | ✅ | After driver returns |
+
+### Impact on Latency Measurement
+
+**Current drop detectors (tcp/udp/icmp_drop_detector.py)**:
+- Use `dev_queue_xmit` (before qdisc)
+- qdisc delay is NOT included in "Internal" segment
+- qdisc delay is counted as part of "External" segment
+- This may cause confusion when qdisc has significant delay
+
+**Recommendation for drop detectors**:
+- For **drop detection**: `dev_queue_xmit` is appropriate (drops before qdisc are internal)
+- For **latency measurement**: Consider adding `dev_hard_start_xmit` to separate qdisc delay
+
+---
+
+## Alternative TCP Drop/Latency Detection Approaches
+
+| Approach | Pros | Cons | Use Case |
+|----------|------|------|----------|
+| Current bidirectional | Complete RTT | Cumulative ACK issue | Request-response protocols |
+| `--internal-only` | No false positives | Internal only | Bulk transfers |
+| TCP retransmission tracking | Accurate drop detection | Cannot measure latency | Drop diagnosis |
+| TCP timestamp option | Precise RTT | Requires both ends support | General purpose |
+| SACK analysis | Precise drop location | Complex parsing | Detailed diagnosis |
+
+**Recommended Approach by Scenario**:
+
+| Scenario | Recommended Mode | Reason |
+|----------|-----------------|--------|
+| SSH, HTTP request-response | Bidirectional (default) | Each request has matching reply |
+| iperf3 throughput test | `--internal-only` | Avoid cumulative ACK false positives |
+| File transfer, streaming | `--internal-only` | Bulk data, cumulative ACK |
+| Drop diagnosis | TCP retransmission tracking | Accurate drop detection |
+| Latency diagnosis | TCP timestamp or ICMP | More reliable RTT measurement |

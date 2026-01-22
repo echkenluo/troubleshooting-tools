@@ -28,7 +28,9 @@
 #
 # Packet identification:
 #   TCP packets are uniquely identified by:
-#   {src_ip, dst_ip, src_port, dst_port, tcp_seq, payload_len}
+#   {src_ip, dst_ip, src_port, dst_port, expected_ack, payload_len}
+#   where expected_ack = seq + payload_len for Request
+#   and ack_seq for Reply (matches Request's expected_ack)
 
 try:
     from bcc import BPF
@@ -95,13 +97,16 @@ static __always_inline int is_tx_iface(int ifindex) {
 }
 
 // TCP flow key - uniquely identifies a TCP packet
+// Uses expected_ack for Request/Reply matching:
+// - Request: expected_ack = seq + payload_len
+// - Reply: lookup using ack_seq (matches Request's expected_ack)
 struct tcp_flow_key {
     __be32 sip;           // Source IP (canonical: always SRC_IP_FILTER)
     __be32 dip;           // Destination IP (canonical: always DST_IP_FILTER)
     __be16 sport;         // Source port (canonical order)
     __be16 dport;         // Destination port (canonical order)
-    __be32 seq;           // TCP sequence number
-    __be16 payload_len;   // Payload length (distinguishes segments)
+    __be32 expected_ack;  // Request: seq+payload_len, Reply: ack_seq
+    __be16 payload_len;   // Payload length (for statistics)
     __be16 pad;           // Padding for alignment
 };
 
@@ -119,6 +124,7 @@ BPF_PERF_OUTPUT(events);
 
 // Parse TCP packet and fill flow key
 // Returns: 1=request(src->dst), 2=reply(dst->src), 0=not matched
+// Uses expected_ack for matching: Request stores seq+payload_len, Reply uses ack_seq
 static __always_inline int parse_tcp_packet(struct sk_buff *skb,
     struct tcp_flow_key *key, u8 *tcp_flags_out)
 {
@@ -211,15 +217,23 @@ static __always_inline int parse_tcp_packet(struct sk_buff *skb,
     if (is_request) {
         key->sport = actual_sport;
         key->dport = actual_dport;
-        key->seq = tcp.seq;
+        // Request: expected_ack = seq + payload_len + SYN/FIN adjustment
+        // SYN and FIN flags each consume one sequence number
+        u32 seq_host = ntohl(tcp.seq);
+        u32 expected_ack = seq_host + payload_len;
+        if (*tcp_flags_out & 0x02) expected_ack += 1;  // SYN consumes 1 seq
+        if (*tcp_flags_out & 0x01) expected_ack += 1;  // FIN consumes 1 seq
+        key->expected_ack = htonl(expected_ack);
+        key->payload_len = htons(payload_len);
     } else {
-        // For replies, store ports in canonical order (src->dst perspective)
+        // Reply: store ports in canonical order (src->dst perspective)
         key->sport = actual_dport;  // Original source port
         key->dport = actual_sport;  // Original dest port
-        key->seq = tcp.seq;         // Reply's own sequence number
+        // Reply: use ack_seq to match Request's expected_ack
+        key->expected_ack = tcp.ack_seq;
+        key->payload_len = htons(payload_len);
     }
 
-    key->payload_len = htons(payload_len);
     key->pad = 0;
 
     return is_request ? 1 : 2;
@@ -373,7 +387,7 @@ class TcpFlowKey(ctypes.Structure):
         ("dip", ctypes.c_uint32),
         ("sport", ctypes.c_uint16),
         ("dport", ctypes.c_uint16),
-        ("seq", ctypes.c_uint32),
+        ("expected_ack", ctypes.c_uint32),
         ("payload_len", ctypes.c_uint16),
         ("pad", ctypes.c_uint16),
     ]
@@ -435,13 +449,14 @@ def format_ip(addr):
 
 
 class FlowTracker:
-    """Track TCP flows and detect drops"""
+    """Track TCP flows and detect drops with latency statistics"""
 
-    def __init__(self, timeout_ms, rx_iface, tx_iface):
+    def __init__(self, timeout_ms, rx_iface, tx_iface, internal_only=False):
         self.flows = OrderedDict()
         self.timeout_ns = timeout_ms * 1000000
         self.rx_iface = rx_iface
         self.tx_iface = tx_iface
+        self.internal_only = internal_only
         self.stats = {
             "total_flows": 0,
             "complete_flows": 0,
@@ -449,11 +464,18 @@ class FlowTracker:
             "external_drop": 0,
             "rep_internal_drop": 0,
         }
+        # Latency statistics (in microseconds)
+        self.latency_stats = {
+            "req_internal": [],    # ReqTX - ReqRX
+            "external": [],        # RepRX - ReqTX
+            "rep_internal": [],    # RepTX - RepRX
+            "total": [],           # RepTX - ReqRX
+        }
 
     def _make_key(self, event):
         return (event.key.sip, event.key.dip,
                 socket.ntohs(event.key.sport), socket.ntohs(event.key.dport),
-                socket.ntohl(event.key.seq), socket.ntohs(event.key.payload_len))
+                socket.ntohl(event.key.expected_ack), socket.ntohs(event.key.payload_len))
 
     def update(self, event):
         key = self._make_key(event)
@@ -477,9 +499,29 @@ class FlowTracker:
             if ts_array[i] != 0 and flow["ts"][i] == 0:
                 flow["ts"][i] = ts_array[i]
 
-        if stage == 3 and not flow["reported"]:
+        # In internal-only mode, complete when ReqTX is done
+        if self.internal_only and stage == 1 and not flow["reported"]:
             flow["reported"] = True
             self.stats["complete_flows"] += 1
+            ts = flow["ts"]
+            if ts[0] and ts[1]:
+                self.latency_stats["req_internal"].append((ts[1] - ts[0]) / 1000.0)
+            return ("complete", key, flow["ts"], event.tcp_flags)
+
+        # Normal mode: complete when RepTX (stage 3) is done
+        if not self.internal_only and stage == 3 and not flow["reported"]:
+            flow["reported"] = True
+            self.stats["complete_flows"] += 1
+            # Collect latency statistics
+            ts = flow["ts"]
+            if ts[0] and ts[1]:
+                self.latency_stats["req_internal"].append((ts[1] - ts[0]) / 1000.0)
+            if ts[1] and ts[2]:
+                self.latency_stats["external"].append((ts[2] - ts[1]) / 1000.0)
+            if ts[2] and ts[3]:
+                self.latency_stats["rep_internal"].append((ts[3] - ts[2]) / 1000.0)
+            if ts[0] and ts[3]:
+                self.latency_stats["total"].append((ts[3] - ts[0]) / 1000.0)
             return ("complete", key, flow["ts"], event.tcp_flags)
 
         return ("update", key, flow["ts"], event.tcp_flags)
@@ -516,6 +558,11 @@ class FlowTracker:
 
         if has_req_rx and not has_req_tx:
             return "req_internal"
+
+        # In internal-only mode, don't report external or reply drops
+        if self.internal_only:
+            return None
+
         if has_req_tx and not has_rep_rx:
             return "external"
         if has_rep_rx and not has_rep_tx:
@@ -524,13 +571,18 @@ class FlowTracker:
 
     def _report_drop(self, key, ts, drop_type, tcp_flags):
         """Report a detected drop"""
-        sip, dip, sport, dport, seq, payload_len = key
+        sip, dip, sport, dport, expected_ack, payload_len = key
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
+        # For external drops, collect internal latency if available
+        if drop_type == "external" and ts[0] and ts[1]:
+            lat = (ts[1] - ts[0]) / 1000.0
+            self.latency_stats["req_internal"].append(lat)
+
         print("\n=== TCP Drop Detected: %s ===" % now)
-        print("Flow: %s:%d -> %s:%d (Seq=%u, PayloadLen=%d, Flags=%s)" % (
+        print("Flow: %s:%d -> %s:%d (ExpectedACK=%u, PayloadLen=%d, Flags=%s)" % (
             format_ip(sip), sport, format_ip(dip), dport,
-            seq, payload_len, format_tcp_flags(tcp_flags)))
+            expected_ack, payload_len, format_tcp_flags(tcp_flags)))
 
         stage_info = []
         for i, name in enumerate(STAGE_NAMES):
@@ -549,6 +601,10 @@ class FlowTracker:
             print("\nDrop Location: EXTERNAL (network or peer)")
             print("  Request sent from %s but Reply NOT received at %s" % (
                 self.tx_iface, self.tx_iface))
+            if ts[0] and ts[1]:
+                lat = (ts[1] - ts[0]) / 1000.0
+                print("  Internal forwarding latency: %.1f us" % lat)
+            print("  Note: For bulk TCP, Reply ACK may confirm multiple packets")
             self.stats["external_drop"] += 1
         elif drop_type == "rep_internal":
             print("\nDrop Location: Reply dropped INTERNALLY")
@@ -564,6 +620,25 @@ class FlowTracker:
         print("Request internal drops: %d" % self.stats["req_internal_drop"])
         print("External drops: %d" % self.stats["external_drop"])
         print("Reply internal drops: %d" % self.stats["rep_internal_drop"])
+
+        # Print latency statistics
+        print("\n=== Latency Statistics ===")
+        lat_names = [
+            ("req_internal", "Request Internal"),
+            ("external", "External        "),
+            ("rep_internal", "Reply Internal  "),
+            ("total", "Total RTT       "),
+        ]
+        for key, name in lat_names:
+            samples = self.latency_stats[key]
+            if samples:
+                min_lat = min(samples)
+                max_lat = max(samples)
+                avg_lat = sum(samples) / len(samples)
+                print("%s (%d samples): min=%.1f avg=%.1f max=%.1f us" % (
+                    name, len(samples), min_lat, avg_lat, max_lat))
+            else:
+                print("%s: no samples" % name)
 
 
 def main():
@@ -596,7 +671,8 @@ Flow stages:
 
 Packet identification:
   TCP packets are uniquely identified by:
-  {src_ip, dst_ip, src_port, dst_port, tcp_seq, payload_len}
+  {src_ip, dst_ip, src_port, dst_port, expected_ack, payload_len}
+  where expected_ack = seq + payload_len (Request) or ack_seq (Reply)
 """)
 
     parser.add_argument('--src-ip', type=str, required=True,
@@ -615,6 +691,9 @@ Packet identification:
                         help='Timeout in ms to wait for complete flow (default: 1000)')
     parser.add_argument('--verbose', action='store_true',
                         help='Print all flow events')
+    parser.add_argument('--internal-only', action='store_true',
+                        help='Only track internal latency (ReqRX->ReqTX), skip Reply tracking. '
+                             'Use this for bulk TCP traffic where ACK matching is unreliable.')
 
     args = parser.parse_args()
 
@@ -679,12 +758,17 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
     print("RX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in rx_ifindexes))
     print("TX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in tx_ifindexes))
     print("Timeout: %d ms" % args.timeout_ms)
+    if args.internal_only:
+        print("Mode: Internal-only (track ReqRX->ReqTX, skip Reply)")
+    else:
+        print("Mode: Bidirectional (track full Request/Reply path)")
     print("")
     print("Flow path:")
     print("  [0] Request RX at %s" % args.rx_iface)
     print("  [1] Request TX at %s" % args.tx_iface)
-    print("  [2] Reply RX at %s" % args.tx_iface)
-    print("  [3] Reply TX at %s" % args.rx_iface)
+    if not args.internal_only:
+        print("  [2] Reply RX at %s" % args.tx_iface)
+        print("  [3] Reply TX at %s" % args.rx_iface)
     print("")
 
     try:
@@ -695,7 +779,7 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
 
-    tracker = FlowTracker(args.timeout_ms, args.rx_iface, args.tx_iface)
+    tracker = FlowTracker(args.timeout_ms, args.rx_iface, args.tx_iface, args.internal_only)
 
     def handle_event(cpu, data, size):
         event = ctypes.cast(data, ctypes.POINTER(Event)).contents
@@ -703,20 +787,23 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
 
         if args.verbose and result:
             action, key, ts, tcp_flags = result
-            sip, dip, sport, dport, seq, payload_len = key
+            sip, dip, sport, dport, expected_ack, payload_len = key
             ts_str = " ".join(["%s:%s" % (STAGE_NAMES[i],
                 "Y" if ts[i] != 0 else "-") for i in range(MAX_STAGES)])
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            print("%s [%s] %s:%d->%s:%d Seq=%u Len=%d Flags=%s %s" % (
+            print("%s [%s] %s:%d->%s:%d ExpACK=%u Len=%d Flags=%s %s" % (
                 now_str, action, format_ip(sip), sport, format_ip(dip), dport,
-                seq, payload_len, format_tcp_flags(tcp_flags), ts_str))
+                expected_ack, payload_len, format_tcp_flags(tcp_flags), ts_str))
             if action == "complete":
                 lat_req_internal = (ts[1] - ts[0]) / 1000.0 if ts[0] and ts[1] else 0
-                lat_external = (ts[2] - ts[1]) / 1000.0 if ts[1] and ts[2] else 0
-                lat_rep_internal = (ts[3] - ts[2]) / 1000.0 if ts[2] and ts[3] else 0
-                lat_total = (ts[3] - ts[0]) / 1000.0 if ts[0] and ts[3] else 0
-                print("  Latency(us): ReqInternal=%.1f  External=%.1f  RepInternal=%.1f  Total=%.1f" % (
-                    lat_req_internal, lat_external, lat_rep_internal, lat_total))
+                if args.internal_only:
+                    print("  Latency(us): Internal=%.1f" % lat_req_internal)
+                else:
+                    lat_external = (ts[2] - ts[1]) / 1000.0 if ts[1] and ts[2] else 0
+                    lat_rep_internal = (ts[3] - ts[2]) / 1000.0 if ts[2] and ts[3] else 0
+                    lat_total = (ts[3] - ts[0]) / 1000.0 if ts[0] and ts[3] else 0
+                    print("  Latency(us): ReqInternal=%.1f  External=%.1f  RepInternal=%.1f  Total=%.1f" % (
+                        lat_req_internal, lat_external, lat_rep_internal, lat_total))
                 print("-" * 80)
 
     b["events"].open_perf_buffer(handle_event)
