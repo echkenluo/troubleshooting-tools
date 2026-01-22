@@ -84,7 +84,7 @@ struct inet_cork;
 #define TX_STAGE_3    3  // ovs_dp_upcall
 #define TX_STAGE_4    4  // ovs_flow_key_extract_userspace
 #define TX_STAGE_5    5  // ovs_vport_send
-#define TX_STAGE_6    6  // dev_queue_xmit (physical)
+#define TX_STAGE_6    6  // net_dev_xmit (physical)
 
 // RX direction stages (Physical -> System)
 #define RX_STAGE_0    7  // __netif_receive_skb (physical)
@@ -753,8 +753,10 @@ int kprobe__ovs_vport_send(struct pt_regs *ctx, const void *vport, struct sk_buf
     return 0;
 }
 
-// TX Stage 6: dev_queue_xmit
-int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
+// TX Stage 6: net_dev_xmit tracepoint
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
     if (!is_target_ifindex(skb)) return 0;
     if (DIRECTION_FILTER == 2) return 0;  // rx only
     handle_stage_event(ctx, skb, TX_STAGE_6, 1);
@@ -850,7 +852,7 @@ def get_stage_name(stage_id):
         3: "TX_S3_ovs_dp_upcall",
         4: "TX_S4_ovs_flow_key_extract",
         5: "TX_S5_ovs_vport_send",
-        6: "TX_S6_dev_queue_xmit",
+        6: "TX_S6_net_dev_xmit",
 
         # RX path
         7: "RX_S0_netif_receive_skb",

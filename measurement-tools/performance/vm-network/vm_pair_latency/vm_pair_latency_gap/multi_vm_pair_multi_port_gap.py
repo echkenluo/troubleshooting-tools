@@ -70,9 +70,9 @@ static __always_inline int is_allowed_port(u16 port_be)
     return flag ? 1 : 0;
 }
 
-TRACEPOINT_PROBE(net, net_dev_xmit)
+RAW_TRACEPOINT_PROBE(net_dev_xmit)
 {
-    struct sk_buff *skb = (struct sk_buff *)args->skbaddr;
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
 
     struct net_device *dev_ptr = 0;

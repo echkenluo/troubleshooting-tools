@@ -27,7 +27,7 @@
 #                         this is the remote IP sending the request.
 #   --phy-iface1 PHY_IFACE1
 #                         First physical interface to monitor (e.g., for
-#                         dev_queue_xmit on request path, or __netif_receive_skb
+#                         net_dev_xmit on request path, or __netif_receive_skb
 #                         on reply path).
 #   --phy-iface2 PHY_IFACE2
 #                         Second physical interface to monitor. If not provided,
@@ -637,7 +637,11 @@ int kprobe__ovs_vport_send(struct pt_regs *ctx, const void *vport, struct sk_buf
     return 0;
 }
 
-int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) {
+        return 0;
+    }
     if (!is_target_ifindex(skb)) {
         return 0;
     }
@@ -773,7 +777,7 @@ def get_detailed_stage_name(stage_id, direction):
     probe_map_tx = {
         0: "ip_output",       1: "internal_dev_xmit",  2: "ovs_dp_process_packet",
         3: "ovs_dp_upcall",     4: "ovs_flow_key_extract_userspace", 5: "ovs_vport_send",
-        6: "dev_queue_xmit",
+        6: "net_dev_xmit",
         7: "__netif_receive_skb", 8: "netdev_frame_hook",  9: "ovs_dp_process_packet",
         10: "ovs_dp_upcall",    11: "ovs_flow_key_extract_userspace",12: "ovs_vport_send",
         13: "icmp_rcv"
@@ -785,7 +789,7 @@ def get_detailed_stage_name(stage_id, direction):
         6: "icmp_rcv",
         7: "ip_output",       8: "internal_dev_xmit",  9: "ovs_dp_process_packet",
         10: "ovs_dp_upcall",    11: "ovs_flow_key_extract_userspace",12: "ovs_vport_send",
-        13: "dev_queue_xmit"
+        13: "net_dev_xmit"
     }
 
     base_name = base_names.get(stage_id, "Unknown Stage")
@@ -1074,7 +1078,7 @@ Examples:
         ("ovs_dp_upcall", "kprobe__ovs_dp_upcall"),
         ("ovs_flow_key_extract_userspace", "kprobe__ovs_flow_key_extract_userspace"),
         ("ovs_vport_send", "kprobe__ovs_vport_send"),
-        ("dev_queue_xmit", "kprobe__dev_queue_xmit"),
+        ("net_dev_xmit", "raw_tracepoint__net_dev_xmit"),
         ("icmp_rcv", "kprobe__icmp_rcv")
     ]
 

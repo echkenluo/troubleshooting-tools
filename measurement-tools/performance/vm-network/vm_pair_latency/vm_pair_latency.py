@@ -67,9 +67,9 @@ static __always_inline bool devname_is(const char *ifname, const char *prefix, i
 }
 
 
-TRACEPOINT_PROBE(net, net_dev_xmit)
+RAW_TRACEPOINT_PROBE(net_dev_xmit)
 {
-    struct sk_buff *skb = (struct sk_buff *)args->skbaddr;
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
 
     // Get device info from skb

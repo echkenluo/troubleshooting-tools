@@ -23,12 +23,12 @@
 #
 # Trace stages (minimal host-only, no ip_send_skb dependency):
 # TX mode (local -> remote):
-#   Path 1 (Request): ip_local_out -> dev_queue_xmit
+#   Path 1 (Request): ip_local_out -> net_dev_xmit
 #   Path 2 (Reply):   __netif_receive_skb -> ip_rcv -> icmp_rcv
 #
 # RX mode (remote -> local):
 #   Path 1 (Request): __netif_receive_skb -> ip_rcv -> icmp_rcv
-#   Path 2 (Reply):   ip_local_out -> dev_queue_xmit
+#   Path 2 (Reply):   ip_local_out -> net_dev_xmit
 
 # BCC module import with fallback
 try:
@@ -446,8 +446,11 @@ int kprobe____ip_local_out(struct pt_regs *ctx, struct net *net, struct sock *sk
     return 0;
 }
 
-// Probe: dev_queue_xmit
-int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
+// Tracepoint: net_dev_xmit
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
+
     struct packet_key_t key = {};
     u8 icmp_type = 0;
 
@@ -695,7 +698,7 @@ def get_stage_name(stage_id, direction):
     if direction == "tx":
         stage_names = {
             0: "P1:S0 (ip_local_out)",
-            1: "P1:S1 (dev_queue_xmit)",
+            1: "P1:S1 (net_dev_xmit)",
             2: "P1:S2 (unused)",
             3: "P2:S0 (__netif_receive_skb)",
             4: "P2:S1 (ip_rcv)",
@@ -708,7 +711,7 @@ def get_stage_name(stage_id, direction):
             2: "P1:S2 (icmp_rcv)",
             3: "P2:S0 (unused)",
             4: "P2:S1 (ip_local_out)",
-            5: "P2:S2 (dev_queue_xmit)"
+            5: "P2:S2 (net_dev_xmit)"
         }
     return stage_names.get(stage_id, "Unknown")
 
@@ -1000,7 +1003,6 @@ static const int target_ifindexes[IFACE_COUNT] = {%s};
     probe_functions = [
         "ip_local_out",
         "__ip_local_out",
-        "dev_queue_xmit",
         "ip_rcv",
         "icmp_rcv"
     ]
@@ -1027,6 +1029,12 @@ static const int target_ifindexes[IFACE_COUNT] = {%s};
         tp_alt = "/sys/kernel/debug/tracing/events/net/netif_rx"
         if os.path.exists(tp_alt):
             print("  [INFO] Found alternative: netif_rx tracepoint")
+
+    tp_xmit = "/sys/kernel/debug/tracing/events/net/net_dev_xmit"
+    if os.path.exists(tp_xmit):
+        print("  [OK] net_dev_xmit tracepoint exists")
+    else:
+        print("  [WARN] net_dev_xmit tracepoint NOT found!")
 
     b["events"].open_perf_buffer(print_event)
 

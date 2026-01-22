@@ -234,9 +234,9 @@ TRACEPOINT_PROBE(net, netif_receive_skb)
 }
 
 // ---------------------------------------------------
-TRACEPOINT_PROBE(net, net_dev_xmit)
+RAW_TRACEPOINT_PROBE(net_dev_xmit)
 {
-    struct sk_buff *skb = (struct sk_buff *) args->skbaddr;
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) {
         bpf_trace_printk("DEBUG: skb is NULL in net_dev_xmit\n");
         return 0;

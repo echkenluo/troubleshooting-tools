@@ -301,7 +301,9 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
     return 0;
 }
 
-int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    // args: skb, rc, dev, len
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb)
         return 0;
 

@@ -122,7 +122,7 @@ bpf_text = """
 #define STG_QDISC_ENQ       8   // qdisc_enqueue (physical dev)
 #define STG_QDISC_DEQ       9   // qdisc_dequeue (physical dev)
 #define STG_TX_QUEUE        10  // dev_queue_xmit (physical dev)
-#define STG_TX_XMIT         11  // dev_hard_start_xmit (physical dev) - LAST POINT
+#define STG_TX_XMIT         11  // net:net_dev_xmit (physical dev) - LAST POINT
 
 // VNET TX path (VM RX, packets from external to VM)
 #define STG_PHY_RX          12  // netif_receive_skb (physical) - FIRST POINT
@@ -938,24 +938,26 @@ RAW_TRACEPOINT_PROBE(qdisc_dequeue) {
 
 int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;  // Skip if vnet_tx only
         handle_stage_event(ctx, skb, STG_TX_QUEUE, 1);
     }
-    
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;  // Skip if vnet_rx only
         handle_stage_event(ctx, skb, STG_VNET_TX, 2);  // Last stage for vnet_tx
     }
-    
+
     return 0;
 }
 
-int kprobe__dev_queue_xmit_nit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    // args: skb, rc, dev, len
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb || !is_target_phy_interface(skb)) return 0;
     if (DIRECTION_FILTER == 2) return 0;  // Skip if vnet_tx only
-    
+
     handle_stage_event(ctx, skb, STG_TX_XMIT, 1);  // Last stage for vnet_rx
     return 0;
 }
