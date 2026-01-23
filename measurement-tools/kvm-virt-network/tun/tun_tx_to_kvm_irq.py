@@ -1073,6 +1073,9 @@ int trace_vmx_deliver_posted_interrupt(struct pt_regs *ctx) {
 interrupt_traces = []
 chain_stats = {}
 sequence_errors = 0
+# Track in-flight chain delays for per-packet total calculation
+# eventfd_ctx -> {stage: delay_ns}
+inflight_chain_delays = {}
 # Stage names ordered by execution sequence
 stage_names = {
     1: "tun_net_xmit",
@@ -1188,6 +1191,25 @@ def process_interrupt_event(cpu, data, size):
 
     print(base_info + detail + common_info)
 
+    # Track per-packet chain delays and print total when chain completes
+    if event.stage >= 2 and event.eventfd_ctx > 0:
+        key = event.eventfd_ctx
+        if key not in inflight_chain_delays:
+            inflight_chain_delays[key] = {}
+        if calculated_delay > 0:
+            inflight_chain_delays[key][event.stage] = calculated_delay
+
+        # When Stage 5 completes, print per-packet total delay
+        if event.stage == 5:
+            chain = inflight_chain_delays.get(key, {})
+            if 2 in chain and 3 in chain and 4 in chain and 5 in chain:
+                total_delay_ns = chain[2] + chain[3] + chain[4] + chain[5]
+                total_delay_ms = total_delay_ns / 1000000.0
+                print("  -> Total(S1->S5): {:.3f}ms".format(total_delay_ms))
+            # Clean up completed chain
+            if key in inflight_chain_delays:
+                del inflight_chain_delays[key]
+
 def analyze_interrupt_chains():
     """Analyze interrupt chain completeness and sequence"""
     if not chain_stats:
@@ -1289,6 +1311,7 @@ def print_statistics_summary():
         for proto, count in sorted(protocols.items(), key=lambda x: x[1], reverse=True):
             proto_name = proto_names.get(proto, 'Unknown({})'.format(proto))
             print("  {}: {} packets".format(proto_name, count))
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1527,7 +1550,7 @@ Examples:
 
     if args.analyze_chains:
         print_statistics_summary()
-    
+
     # Output to JSON file if requested
     if args.output:
         try:
