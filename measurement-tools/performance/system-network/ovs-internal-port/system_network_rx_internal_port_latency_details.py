@@ -593,8 +593,10 @@ int kprobe__process_backlog(struct pt_regs *ctx, void *napi, int quota) {
     return 0;
 }
 
-// RX_S5_6: netif_receive_skb_internal (after softirq processing)
-int kprobe__netif_receive_skb_internal(struct pt_regs *ctx, struct sk_buff *skb) {
+// RX_S5_6: netif_receive_skb via raw tracepoint (after softirq processing)
+RAW_TRACEPOINT_PROBE(netif_receive_skb) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
     handle_rx_stage_event(ctx, skb, RX_STAGE_5_6);
     return 0;
 }
@@ -978,7 +980,7 @@ boundary between enqueue_to_backlog and process_backlog.
             protocol_filter, ifindex1, ifindex2
         ))
         print("\nBPF program loaded successfully")
-        print("All 10 kprobes attached")
+        print("Probes attached (9 kprobes + 1 raw tracepoint)")
     except Exception as e:
         print("\nError loading BPF program: %s" % e)
         print("\nNote: Some kernel functions may not exist on your system.")

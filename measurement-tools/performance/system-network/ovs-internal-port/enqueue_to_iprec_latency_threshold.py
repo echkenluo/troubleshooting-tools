@@ -314,8 +314,11 @@ int kprobe__enqueue_to_backlog(struct pt_regs *ctx, struct sk_buff *skb, int cpu
     return 0;
 }
 
-// Stage 2: __netif_receive_skb
-int kprobe____netif_receive_skb(struct pt_regs *ctx, struct sk_buff *skb) {
+// Stage 2: netif_receive_skb (via raw tracepoint)
+RAW_TRACEPOINT_PROBE(netif_receive_skb) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
+
     // Check interface
     if (!is_target_ifindex(skb)) {
         return 0;
@@ -620,9 +623,9 @@ In OVS environments, use separate runs to monitor physical NIC vs internal port.
             protocol_filter, target_ifindex, args.threshold_us
         ))
         print("\nBPF program loaded successfully")
-        print("Kprobes attached:")
+        print("Probes attached:")
         print("  - kprobe__enqueue_to_backlog")
-        print("  - kprobe____netif_receive_skb")
+        print("  - raw_tracepoint:netif_receive_skb")
     except Exception as e:
         print("\nError loading BPF program: %s" % e)
         sys.exit(1)

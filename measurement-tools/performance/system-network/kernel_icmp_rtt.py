@@ -21,14 +21,16 @@
 #     sudo ./kernel_icmp_rtt.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #                               --interface ens4f0,ens4f1 --direction tx
 #
-# Trace stages (minimal host-only, no ip_send_skb dependency):
+# Trace stages (simplified, entry/exit only for better kernel compatibility):
 # TX mode (local -> remote):
 #   Path 1 (Request): ip_local_out -> net_dev_xmit
-#   Path 2 (Reply):   __netif_receive_skb -> ip_rcv -> icmp_rcv
+#   Path 2 (Reply):   netif_receive_skb -> icmp_rcv
 #
 # RX mode (remote -> local):
-#   Path 1 (Request): __netif_receive_skb -> ip_rcv -> icmp_rcv
+#   Path 1 (Request): netif_receive_skb -> icmp_rcv
 #   Path 2 (Reply):   ip_local_out -> net_dev_xmit
+#
+# Note: ip_rcv probe removed - newer kernels use list-based receive path
 
 # BCC module import with fallback
 try:
@@ -521,49 +523,11 @@ TRACEPOINT_PROBE(net, netif_receive_skb_entry) {
     return 0;
 }
 
-// Older kernels may miss the tracepoint; fallback kprobe
-int kprobe____netif_receive_skb_core(struct pt_regs *ctx, struct sk_buff *skb) {
-    debug_inc(TRACE_DIRECTION == 0 ? PATH2_STAGE_0 : PATH1_STAGE_0, CODE_PROBE_ENTRY);
+// NOTE: kprobe fallback removed - tracepoint net:netif_receive_skb is stable since Linux 2.6.31
+// If running on very old kernels without tracepoint, manually add kprobe to __netif_receive_skb
 
-    if (!skb) return 0;
-
-    struct packet_key_t key = {};
-    u8 icmp_type = 0;
-
-    if (TRACE_DIRECTION == 0) {  // TX: reply path (incoming echo-reply)
-        if (parse_packet_key(skb, &key, &icmp_type, 1, 1, PATH2_STAGE_0)) {
-            handle_event(ctx, skb, PATH2_STAGE_0, &key, icmp_type);
-        }
-    } else {  // RX: request path
-        if (parse_packet_key(skb, &key, &icmp_type, 0, 1, PATH1_STAGE_0)) {
-            handle_event(ctx, skb, PATH1_STAGE_0, &key, icmp_type);
-        }
-    }
-    return 0;
-}
-
-// Probe: ip_rcv
-// Kernel 4.18 signature: int ip_rcv(struct sk_buff *skb, struct net_device *dev,
-//                                    struct packet_type *pt, struct net_device *orig_dev)
-int kprobe__ip_rcv(struct pt_regs *ctx, struct sk_buff *skb,
-                   struct net_device *dev, struct packet_type *pt,
-                   struct net_device *orig_dev) {
-    struct packet_key_t key = {};
-    u8 icmp_type = 0;
-
-    debug_inc(TRACE_DIRECTION == 0 ? PATH2_STAGE_1 : PATH1_STAGE_1, CODE_PROBE_ENTRY);
-
-    if (TRACE_DIRECTION == 0) {  // TX: reply path (incoming echo-reply)
-        if (parse_packet_key(skb, &key, &icmp_type, 1, 1, PATH2_STAGE_1)) {
-            handle_event(ctx, skb, PATH2_STAGE_1, &key, icmp_type);
-        }
-    } else {  // RX: request path
-        if (parse_packet_key(skb, &key, &icmp_type, 0, 1, PATH1_STAGE_1)) {
-            handle_event(ctx, skb, PATH1_STAGE_1, &key, icmp_type);
-        }
-    }
-    return 0;
-}
+// NOTE: ip_rcv probe removed - newer kernels use list-based receive path (ip_list_rcv -> ip_rcv_core)
+// which bypasses ip_rcv. Only keeping entry (netif_receive_skb) and exit (icmp_rcv) probes.
 
 // Probe: icmp_rcv
 int kprobe__icmp_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
@@ -697,21 +661,17 @@ def get_stage_name(stage_id, direction):
     """Get stage name based on direction"""
     if direction == "tx":
         stage_names = {
-            0: "P1:S0 (ip_local_out)",
-            1: "P1:S1 (net_dev_xmit)",
-            2: "P1:S2 (unused)",
-            3: "P2:S0 (__netif_receive_skb)",
-            4: "P2:S1 (ip_rcv)",
-            5: "P2:S2 (icmp_rcv)"
+            0: "P1 (ip_local_out)",
+            1: "P1 (net_dev_xmit)",
+            3: "P2 (netif_receive_skb)",
+            5: "P2 (icmp_rcv)"
         }
     else:  # rx
         stage_names = {
-            0: "P1:S0 (__netif_receive_skb)",
-            1: "P1:S1 (ip_rcv)",
-            2: "P1:S2 (icmp_rcv)",
-            3: "P2:S0 (unused)",
-            4: "P2:S1 (ip_local_out)",
-            5: "P2:S2 (net_dev_xmit)"
+            0: "P1 (netif_receive_skb)",
+            2: "P1 (icmp_rcv)",
+            4: "P2 (ip_local_out)",
+            5: "P2 (net_dev_xmit)"
         }
     return stage_names.get(stage_id, "Unknown")
 
@@ -830,21 +790,24 @@ def print_event(cpu, data, size):
             print("  Stage %d (%-40s): 0x%x" % (i, stage_name, flow.skb_ptr[i]))
 
     print("\nPath 1 Latencies (us):")
-    print_latency_segment(0, 1, flow, args.direction)
     if args.direction == "rx":
-        print_latency_segment(1, 2, flow, args.direction)
+        # RX: netif_receive_skb (0) -> icmp_rcv (2), ip_rcv (1) removed
+        print_latency_segment(0, 2, flow, args.direction)
         if flow.ts[0] > 0 and flow.ts[2] > 0:
             path1_total = format_latency(flow.ts[0], flow.ts[2])
             print("  Total Path 1: %s us" % path1_total)
     else:
+        # TX: ip_local_out (0) -> net_dev_xmit (1)
+        print_latency_segment(0, 1, flow, args.direction)
         if flow.ts[0] > 0 and flow.ts[1] > 0:
             path1_total = format_latency(flow.ts[0], flow.ts[1])
             print("  Total Path 1: %s us" % path1_total)
 
     print("\nPath 2 Latencies (us):")
     if args.direction == "tx":
-        print_latency_segment(3, 4, flow, args.direction)
-        print_latency_segment(4, 5, flow, args.direction)
+        # TX Path 2: netif_receive_skb (3) -> icmp_rcv (5)
+        # Note: ip_rcv (stage 4) removed - newer kernels use ip_list_rcv
+        print_latency_segment(3, 5, flow, args.direction)
         if flow.ts[3] > 0 and flow.ts[5] > 0:
             path2_total = format_latency(flow.ts[3], flow.ts[5])
             print("  Total Path 2: %s us" % path2_total)

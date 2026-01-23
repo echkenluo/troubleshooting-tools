@@ -374,8 +374,11 @@ int kprobe__enqueue_to_backlog(struct pt_regs *ctx, struct sk_buff *skb, int cpu
     return 0;
 }
 
-// Stage 2: __netif_receive_skb (CRITICAL ASYNC BOUNDARY)
-int kprobe____netif_receive_skb(struct pt_regs *ctx, struct sk_buff *skb) {
+// Stage 2: netif_receive_skb via raw tracepoint (CRITICAL ASYNC BOUNDARY)
+RAW_TRACEPOINT_PROBE(netif_receive_skb) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
+
     debug_inc(STAGE_RECEIVE, CODE_PROBE_ENTRY);
 
     // Check interface
@@ -1065,9 +1068,9 @@ Use separate runs to measure each interface independently.
             high_latency_threshold, enable_high_latency
         ))
         print("\nBPF program loaded successfully")
-        print("All 3 kprobes attached:")
+        print("Probes attached:")
         print("  - kprobe__enqueue_to_backlog")
-        print("  - kprobe____netif_receive_skb")
+        print("  - raw_tracepoint:netif_receive_skb")
         print("  - kprobe__ip_rcv")
     except Exception as e:
         print("\nError loading BPF program: %s" % e)

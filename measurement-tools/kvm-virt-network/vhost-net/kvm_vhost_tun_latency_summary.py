@@ -465,8 +465,8 @@ int trace_handle_tx_kick(struct pt_regs *ctx) {
     return 0;
 }
 
-int trace_netif_receive_skb(struct pt_regs *ctx) {
-    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM1(ctx);
+RAW_TRACEPOINT_PROBE(netif_receive_skb) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
     stats_inc(6);
 
@@ -828,8 +828,8 @@ int trace_tun_sendmsg(struct pt_regs *ctx) {
     return 0;
 }
 
-int trace_netif_receive_skb(struct pt_regs *ctx) {
-    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM1(ctx);
+RAW_TRACEPOINT_PROBE(netif_receive_skb) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
     stats_inc(12);
 
@@ -1103,17 +1103,12 @@ def run_discover(args):
     eventfd_signal = find_kernel_function("eventfd_signal", args.verbose)
     vhost_poll_wakeup = find_kernel_function("vhost_poll_wakeup", args.verbose)
     handle_tx_kick = find_kernel_function("handle_tx_kick", args.verbose)
-    netif_recv = find_kernel_function("__netif_receive_skb", args.verbose)
-    if not netif_recv:
-        netif_recv = find_kernel_function("netif_receive_skb", args.verbose)
 
     missing = [n for n, v in [
         ("eventfd_signal", eventfd_signal),
         ("vhost_poll_wakeup", vhost_poll_wakeup),
         ("handle_tx_kick", handle_tx_kick),
     ] if not v]
-    if not netif_recv:
-        missing.append("__netif_receive_skb/netif_receive_skb")
     if missing:
         print("Error: missing kernel symbols: {}".format(", ".join(missing)))
         sys.exit(1)
@@ -1122,7 +1117,7 @@ def run_discover(args):
     b.attach_kretprobe(event=eventfd_signal, fn_name="trace_eventfd_signal_ret")
     b.attach_kprobe(event=vhost_poll_wakeup, fn_name="trace_vhost_poll_wakeup")
     b.attach_kprobe(event=handle_tx_kick, fn_name="trace_handle_tx_kick")
-    b.attach_kprobe(event=netif_recv, fn_name="trace_netif_receive_skb")
+    # netif_receive_skb is attached via RAW_TRACEPOINT_PROBE (auto-attached)
 
     set_device_filter(b, args.device)
     print("Discover mode: running for {}s".format(args.duration))
@@ -1225,9 +1220,6 @@ def run_measure(args):
     vhost_poll_wakeup = find_kernel_function("vhost_poll_wakeup", args.verbose)
     handle_tx_kick = find_kernel_function("handle_tx_kick", args.verbose)
     tun_sendmsg = find_kernel_function("tun_sendmsg", args.verbose)
-    netif_recv = find_kernel_function("__netif_receive_skb", args.verbose)
-    if not netif_recv:
-        netif_recv = find_kernel_function("netif_receive_skb", args.verbose)
     ioeventfd_write = find_kernel_function("ioeventfd_write", args.verbose)
 
     missing = [n for n, v in [
@@ -1235,7 +1227,6 @@ def run_measure(args):
         ("vhost_poll_wakeup", vhost_poll_wakeup),
         ("handle_tx_kick", handle_tx_kick),
         ("tun_sendmsg", tun_sendmsg),
-        ("__netif_receive_skb/netif_receive_skb", netif_recv),
         ("ioeventfd_write", ioeventfd_write),
     ] if not v]
     if missing:
@@ -1248,7 +1239,7 @@ def run_measure(args):
     b.attach_kprobe(event=ioeventfd_write, fn_name="trace_ioeventfd_write")
     b.attach_kprobe(event=handle_tx_kick, fn_name="trace_handle_tx_kick")
     b.attach_kprobe(event=tun_sendmsg, fn_name="trace_tun_sendmsg")
-    b.attach_kprobe(event=netif_recv, fn_name="trace_netif_receive_skb")
+    # netif_receive_skb is attached via RAW_TRACEPOINT_PROBE (auto-attached)
 
     set_device_filter(b, profile.get("device"))
 
