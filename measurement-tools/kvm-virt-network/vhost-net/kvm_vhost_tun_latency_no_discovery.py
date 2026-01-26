@@ -284,7 +284,7 @@ def flow_constants(flow):
     return const
 
 
-def build_bpf_program(flow_const):
+def build_bpf_program(flow_const, debug=False):
     """Build the BPF program text."""
     text = r"""
 #include <linux/bpf.h>
@@ -333,6 +333,7 @@ def build_bpf_program(flow_const):
 
 #define S0_RING_SZ 1024
 #define S2_RING_SZ 2048
+#define DEBUG_ENABLED __DEBUG_ENABLED__
 
 union name_buf {
     char name[IFNAMSIZ];
@@ -419,6 +420,9 @@ BPF_PERCPU_ARRAY(current_eventfd, u64, 1);
 // Work -> eventfd_ctx mapping
 BPF_HASH(work_eventfd, u64, u64, 4096);
 
+// Known eventfds (associated with target TIDs) - for filtering in ioeventfd_write
+BPF_HASH(known_eventfd, u64, u8, 256);
+
 // S0 FIFO per eventfd (ioeventfd_write timestamps)
 BPF_HASH(s0_state, u64, struct s0_state, 4096);  // key: eventfd_ctx
 BPF_HASH(s0_ts, struct s0_slot_key, u64, 65536);  // key: {eventfd, slot}
@@ -443,13 +447,16 @@ BPF_HASH(s1_ok, struct s12_slot_key, u8, 65536);
 // Per-packet latency events
 BPF_PERF_OUTPUT(events);
 
-// Stats counters
-BPF_ARRAY(stats, u64, 24);
-
+// Stats counters (debug only, completely removed when disabled)
+#if DEBUG_ENABLED
+BPF_ARRAY(stats, u64, 32);
 static __always_inline void stats_inc(int idx) {
     u64 *val = stats.lookup(&idx);
     if (val) __sync_fetch_and_add(val, 1);
 }
+#else
+#define stats_inc(idx)
+#endif
 
 static __always_inline int name_filter(struct net_device *dev) {
     union name_buf real = {};
@@ -487,19 +494,33 @@ static __always_inline void s0_fifo_push(u64 evt, u64 ts) {
 
 static __always_inline int s0_fifo_pop(u64 evt, u64 *ts) {
     struct s0_state *p = s0_state.lookup(&evt);
-    if (!p || p->head == p->tail) {
+    if (!p) {
+        stats_inc(17);  // s0_state not found
+        stats_inc(6);
+        return 0;
+    }
+    if (p->head == p->tail) {
+        stats_inc(18);  // s0 fifo empty (head == tail)
+        stats_inc(6);
+        return 0;
+    }
+    // Check for wrap-around corruption: head > tail means state corrupted
+    if (p->head > p->tail) {
+        stats_inc(19);  // s0 fifo corrupted (head > tail)
         stats_inc(6);
         return 0;
     }
     struct s0_slot_key key = {.eventfd = evt, .slot = p->head % S0_RING_SZ};
     u64 *val = s0_ts.lookup(&key);
     if (!val) {
+        stats_inc(20);  // s0_ts lookup failed (slot data missing)
         stats_inc(6);
         p->head++;
         return 0;
     }
     *ts = *val;
     p->head++;
+    stats_inc(24);  // s0_fifo_pop success
     return 1;
 }
 
@@ -695,9 +716,17 @@ int trace_ioeventfd_write(struct pt_regs *ctx) {
     if (!eventfd) return 0;
     u64 evt_ptr = (u64)eventfd;
 
+    // Only track eventfds that are known to be associated with target TIDs
+    u8 *is_known = known_eventfd.lookup(&evt_ptr);
+    if (!is_known) {
+        stats_inc(21);  // eventfd not known (filtered out)
+        return 0;
+    }
+
     // Record timestamp in S0 FIFO (keyed by eventfd)
     u64 ts = bpf_ktime_get_ns();
     s0_fifo_push(evt_ptr, ts);
+    stats_inc(23);  // s0_fifo_push count (for known eventfd)
 
     return 0;
 }
@@ -722,6 +751,11 @@ int trace_handle_tx_kick(struct pt_regs *ctx) {
 
     // Calculate S0 latency (ioeventfd_write -> handle_tx_kick)
     if (eventfd) {
+        stats_inc(14);  // work_eventfd lookup success
+        // Mark this eventfd as known (associated with target TID)
+        u8 one = 1;
+        known_eventfd.update(eventfd, &one);
+
         u64 s0_start = 0;
         if (s0_fifo_pop(*eventfd, &s0_start)) {
             u64 s0_delta = (ts - s0_start) / 1000;  // us
@@ -729,10 +763,12 @@ int trace_handle_tx_kick(struct pt_regs *ctx) {
             u8 one = 1;
             s0_last_ok.update(&tid, &one);
         } else {
+            stats_inc(15);  // eventfd found but fifo pop failed
             u8 zero = 0;
             s0_last_ok.update(&tid, &zero);
         }
     } else {
+        stats_inc(16);  // work_eventfd lookup failed
         u8 zero = 0;
         s0_last_ok.update(&tid, &zero);
     }
@@ -862,6 +898,7 @@ RAW_TRACEPOINT_PROBE(netif_receive_skb) {
 """
     for k, v in flow_const.items():
         text = text.replace("__{}__".format(k), str(v))
+    text = text.replace("__DEBUG_ENABLED__", "1" if debug else "0")
     return text
 
 
@@ -900,10 +937,12 @@ def main():
                         help="Flow filter: proto=udp,src=...,dst=...,sport=...,dport=...")
     parser.add_argument("--duration", type=int,
                         help="Run duration in seconds (default: until Ctrl+C)")
+    parser.add_argument("--warmup", type=int, default=2,
+                        help="Warmup seconds to learn eventfds before output (default: 2)")
     parser.add_argument("--no-detail", action="store_true",
                         help="Disable per-packet detail output")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Verbose output")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug counters in BPF (impacts performance)")
 
     args = parser.parse_args()
 
@@ -911,14 +950,14 @@ def main():
     qemu_pid = args.qemu_pid
     if not qemu_pid:
         print("Auto-detecting QEMU PID for device {}...".format(args.device))
-        qemu_pid = get_qemu_pid_from_device(args.device, args.verbose)
+        qemu_pid = get_qemu_pid_from_device(args.device)
         if not qemu_pid:
             print("Error: Could not auto-detect QEMU PID. Please specify --qemu-pid")
             sys.exit(1)
     print("QEMU PID: {}".format(qemu_pid))
 
     # Get vhost TIDs
-    vhost_tids = get_vhost_tids(qemu_pid, args.verbose)
+    vhost_tids = get_vhost_tids(qemu_pid)
     if not vhost_tids:
         print("Error: No vhost threads found for QEMU PID {}".format(qemu_pid))
         sys.exit(1)
@@ -929,15 +968,15 @@ def main():
     flow_const = flow_constants(flow)
 
     # Build and load BPF program
-    bpf_text = build_bpf_program(flow_const)
+    bpf_text = build_bpf_program(flow_const, debug=args.debug)
     b = BPF(text=bpf_text)
 
     # Find kernel functions
-    eventfd_signal = find_kernel_function("eventfd_signal", args.verbose)
-    vhost_poll_wakeup = find_kernel_function("vhost_poll_wakeup", args.verbose)
-    handle_tx_kick = find_kernel_function("handle_tx_kick", args.verbose)
-    tun_sendmsg = find_kernel_function("tun_sendmsg", args.verbose)
-    ioeventfd_write = find_kernel_function("ioeventfd_write", args.verbose)
+    eventfd_signal = find_kernel_function("eventfd_signal")
+    vhost_poll_wakeup = find_kernel_function("vhost_poll_wakeup")
+    handle_tx_kick = find_kernel_function("handle_tx_kick")
+    tun_sendmsg = find_kernel_function("tun_sendmsg")
+    ioeventfd_write = find_kernel_function("ioeventfd_write")
 
     missing = [n for n, v in [
         ("eventfd_signal", eventfd_signal),
@@ -976,11 +1015,14 @@ def main():
     total_s2_cnt = 0
     total_chain_sum = 0
     total_chain_cnt = 0
+    in_warmup = [True] if args.warmup > 0 else [False]  # Use list for nonlocal mutation
 
     def handle_event(_cpu, data, _size):
         nonlocal total_s0_sum, total_s1_sum, total_s2_sum
         nonlocal total_s0_cnt, total_s1_cnt, total_s2_cnt
         nonlocal total_chain_sum, total_chain_cnt
+        if in_warmup[0]:
+            return  # Skip during warmup (eventfd learning happens in BPF)
         evt = ct.cast(data, ct.POINTER(LatencyEvent)).contents
         total_s2_sum += evt.s2_us
         total_s2_cnt += 1
@@ -1000,6 +1042,18 @@ def main():
                 ts, evt.tid, evt.queue, evt.s0_us, evt.s1_us, evt.s2_us, total))
 
     b["events"].open_perf_buffer(handle_event)
+
+    # Warmup phase to learn eventfds
+    if args.warmup > 0:
+        print("\nWarmup: {}s (learning eventfds)...".format(args.warmup))
+        warmup_start = time.time()
+        try:
+            while (time.time() - warmup_start) < args.warmup:
+                b.perf_buffer_poll(timeout=100)
+        except KeyboardInterrupt:
+            pass
+        in_warmup[0] = False
+        print("Warmup complete.")
 
     print("\nTracing... Hit Ctrl+C to end.")
     if args.duration:
@@ -1031,8 +1085,8 @@ def main():
     print("Total chain:            cnt={:>8}  avg={:>10}us".format(
         total_chain_cnt, fmt_avg(total_chain_sum, total_chain_cnt)))
 
-    # Print debug stats if verbose
-    if args.verbose:
+    # Print debug stats if debug mode enabled
+    if args.debug:
         print("\nDebug counters:")
         stats = b["stats"]
         labels = [
@@ -1040,7 +1094,11 @@ def main():
             "s0_miss", "s1_miss", "s2_miss",
             "fifo_underflow", "fifo_overflow",
             "handle_tx_kick", "tun_sendmsg", "flow_match",
-            "has_s2_start", "netif_receive", "tid_active"
+            "has_s2_start", "netif_receive", "tid_active",
+            "eventfd_lookup_ok", "eventfd_ok_fifo_fail", "eventfd_lookup_fail",
+            "s0_state_notfound", "s0_fifo_empty", "s0_fifo_corrupted",
+            "s0_ts_lookup_fail", "eventfd_filtered", "target_tid_kick",
+            "s0_push", "s0_pop_ok"
         ]
         for i, label in enumerate(labels):
             if i < len(labels):
