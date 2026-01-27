@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# TCP Drop Detector - Detect TCP packet drops between two interfaces
+# TCP Path Tracer - Trace TCP packets through network path for boundary detection
 #
-# This tool monitors TCP packets at two network interfaces to detect
-# packet drops in the forwarding path. It tracks bidirectional flows
-# using TCP sequence numbers for packet identification.
+# This tool monitors TCP packets at two network interfaces to trace
+# packet flow and detect drops in the forwarding path. It tracks
+# bidirectional flows using TCP sequence numbers for packet identification.
 #
 # Usage:
-#   sudo ./tcp_drop_detector.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
+#   sudo ./tcp_path_tracer.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #       --rx-iface eth0 --tx-iface eth1 [--timeout-ms 1000]
 #
 #   # With port filtering:
-#   sudo ./tcp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
+#   sudo ./tcp_path_tracer.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
 #       --rx-iface ens4f0 --tx-iface vnet0 --src-port 22
 #
 # Flow tracking:

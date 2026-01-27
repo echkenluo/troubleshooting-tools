@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# UDP Drop Detector - Detect UDP packet drops between two interfaces
+# UDP Path Tracer - Trace UDP packets through network path for boundary detection
 #
-# This tool monitors UDP packets at two network interfaces to detect
-# packet drops in the forwarding path. It uses fragment group tracking
-# to handle IP fragmentation scenarios.
+# This tool monitors UDP packets at two network interfaces to trace
+# packet flow and detect drops in the forwarding path. It uses fragment
+# group tracking to handle IP fragmentation scenarios.
 #
 # Usage:
-#   sudo ./udp_drop_detector.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
+#   sudo ./udp_path_tracer.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #       --rx-iface eth0 --tx-iface eth1 [--timeout-ms 1000]
 #
 #   # With port filtering:
-#   sudo ./udp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
+#   sudo ./udp_path_tracer.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
 #       --rx-iface ens4f0 --tx-iface vnet0 --dst-port 53
 #
 # Flow tracking (single direction):

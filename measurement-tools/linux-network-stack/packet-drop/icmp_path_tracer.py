@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# ICMP Drop Detector - Detect ICMP packet drops between two interfaces
+# ICMP Path Tracer - Trace ICMP packets through network path for boundary detection
 #
 # This tool monitors ICMP request/reply packets at two network interfaces
-# to detect packet drops in the forwarding path.
+# to trace packet flow and detect drops in the forwarding path.
 #
 # Usage:
-#   sudo ./icmp_drop_detector.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
+#   sudo ./icmp_path_tracer.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #       --rx-iface eth0 --tx-iface eth1 [--timeout-ms 1000]
 #
 #   # For bond interfaces, specify all slaves:
-#   sudo ./icmp_drop_detector.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
+#   sudo ./icmp_path_tracer.py --src-ip 10.0.0.1 --dst-ip 10.0.0.2 \
 #       --rx-iface ens4f0,ens4f1 --tx-iface vnet0
 #
 # Flow tracking:
