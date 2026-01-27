@@ -53,6 +53,9 @@ import datetime
 import time
 from collections import OrderedDict
 
+# Force unbuffered stdout for background execution
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+
 bpf_text = """
 #include <uapi/linux/ptrace.h>
 #include <linux/skbuff.h>
@@ -74,6 +77,54 @@ __IFACE_ARRAYS__
 #define STAGE_RX      0  // Packet received at rx-iface
 #define STAGE_TX      1  // Packet sent from tx-iface
 #define MAX_STAGES    2
+
+// Stats mode control (replaced at load time)
+#define STATS_MODE __STATS_MODE__
+
+// Latency histogram buckets (log2 scale, 0-20)
+// 0: 0-1us, 1: 1-2us, 2: 2-4us, ..., 20: >512ms
+#define LATENCY_BUCKETS 21
+
+// Stats structure for aggregated metrics
+struct stats_t {
+    u64 rx_packets;       // Total packets at RX
+    u64 tx_packets;       // Total packets at TX
+    u64 rx_groups;        // New groups created at RX
+    u64 complete_groups;  // Groups with both RX and TX
+    u64 latency_hist[LATENCY_BUCKETS];
+    u64 total_latency_ns;
+    u64 min_latency_ns;
+    u64 max_latency_ns;
+};
+
+BPF_PERCPU_ARRAY(stats_map, struct stats_t, 1);
+
+// Calculate log2 bucket for latency histogram (manually unrolled for BPF verifier)
+static __always_inline u32 latency_bucket(u64 latency_ns) {
+    u64 latency_us = latency_ns / 1000;
+    if (latency_us == 0) return 0;
+    if (latency_us < 2) return 0;
+    if (latency_us < 4) return 1;
+    if (latency_us < 8) return 2;
+    if (latency_us < 16) return 3;
+    if (latency_us < 32) return 4;
+    if (latency_us < 64) return 5;
+    if (latency_us < 128) return 6;
+    if (latency_us < 256) return 7;
+    if (latency_us < 512) return 8;
+    if (latency_us < 1024) return 9;
+    if (latency_us < 2048) return 10;
+    if (latency_us < 4096) return 11;
+    if (latency_us < 8192) return 12;
+    if (latency_us < 16384) return 13;
+    if (latency_us < 32768) return 14;
+    if (latency_us < 65536) return 15;
+    if (latency_us < 131072) return 16;
+    if (latency_us < 262144) return 17;
+    if (latency_us < 524288) return 18;
+    if (latency_us < 1048576) return 19;
+    return 20;
+}
 
 // IP fragment flags
 #define IP_MF_FLAG    0x2000  // More Fragments flag
@@ -315,6 +366,14 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
         return 0;
 
     u64 ts = bpf_ktime_get_ns();
+
+    // Update stats (always, regardless of mode)
+    u32 stats_key = 0;
+    struct stats_t *stats = stats_map.lookup(&stats_key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->rx_packets, 1);
+    }
+
     struct event_t *group = group_map.lookup(&key);
 
     if (!group) {
@@ -332,7 +391,14 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
         evt.stage = STAGE_RX;
         bpf_probe_read_str(evt.ifname, sizeof(evt.ifname), dev->name);
         group_map.update(&key, &evt);
+
+        if (stats) {
+            __sync_fetch_and_add(&stats->rx_groups, 1);
+        }
+
+#if !STATS_MODE
         events.perf_submit(args, &evt, sizeof(evt));
+#endif
         return 0;
     }
 
@@ -361,7 +427,10 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
 
     bpf_probe_read_str(group->ifname, sizeof(group->ifname), dev->name);
     group_map.update(&key, group);
+
+#if !STATS_MODE
     events.perf_submit(args, group, sizeof(*group));
+#endif
 
     return 0;
 }
@@ -391,6 +460,14 @@ RAW_TRACEPOINT_PROBE(net_dev_xmit) {
         return 0;
 
     u64 ts = bpf_ktime_get_ns();
+
+    // Update stats (always, regardless of mode)
+    u32 stats_key = 0;
+    struct stats_t *stats = stats_map.lookup(&stats_key);
+    if (stats) {
+        __sync_fetch_and_add(&stats->tx_packets, 1);
+    }
+
     struct event_t *group = group_map.lookup(&key);
 
     if (!group) {
@@ -408,7 +485,10 @@ RAW_TRACEPOINT_PROBE(net_dev_xmit) {
         evt.stage = STAGE_TX;
         bpf_probe_read_str(evt.ifname, sizeof(evt.ifname), dev->name);
         group_map.update(&key, &evt);
+
+#if !STATS_MODE
         events.perf_submit(ctx, &evt, sizeof(evt));
+#endif
         return 0;
     }
 
@@ -435,15 +515,53 @@ RAW_TRACEPOINT_PROBE(net_dev_xmit) {
     }
 
     bpf_probe_read_str(group->ifname, sizeof(group->ifname), dev->name);
+
+    // Check if complete: for non-fragmented, just need RX+TX; for fragmented, need all frags
+    u8 is_complete = 0;
+    if (group->ts[STAGE_RX] != 0) {
+        if (!group->is_fragmented) {
+            // Non-fragmented: complete as soon as we have TX
+            is_complete = 1;
+        } else {
+            // Fragmented: need first+last frag and matching counts
+            is_complete = (group->has_first_frag && group->has_last_frag &&
+                          group->frag_count_rx == group->frag_count_tx);
+        }
+    }
+
+    if (is_complete && stats) {
+        u64 latency = ts - group->ts[STAGE_RX];
+        __sync_fetch_and_add(&stats->complete_groups, 1);
+        __sync_fetch_and_add(&stats->total_latency_ns, latency);
+
+        // Update histogram
+        u32 bucket = latency_bucket(latency);
+        __sync_fetch_and_add(&stats->latency_hist[bucket], 1);
+
+        // Update min/max (approximate, race possible but acceptable)
+        if (stats->min_latency_ns == 0 || latency < stats->min_latency_ns) {
+            stats->min_latency_ns = latency;
+        }
+        if (latency > stats->max_latency_ns) {
+            stats->max_latency_ns = latency;
+        }
+    }
+
+#if !STATS_MODE
+    // In verbose mode, update map first for perf_submit, then delete
     group_map.update(&key, group);
     events.perf_submit(ctx, group, sizeof(*group));
-
-    // Clean up completed groups
-    if (group->ts[STAGE_RX] != 0 && group->ts[STAGE_TX] != 0 &&
-        group->has_first_frag && group->has_last_frag &&
-        group->frag_count_rx == group->frag_count_tx) {
+    if (is_complete) {
         group_map.delete(&key);
     }
+#else
+    // In stats mode, delete immediately if complete, otherwise update
+    if (is_complete) {
+        group_map.delete(&key);
+    } else {
+        group_map.update(&key, group);
+    }
+#endif
 
     return 0;
 }
@@ -451,6 +569,29 @@ RAW_TRACEPOINT_PROBE(net_dev_xmit) {
 
 MAX_STAGES = 2
 STAGE_NAMES = ["RX", "TX"]
+LATENCY_BUCKETS = 21
+
+# Histogram bucket labels (log2 scale)
+BUCKET_LABELS = [
+    "0-1us", "1-2us", "2-4us", "4-8us", "8-16us",
+    "16-32us", "32-64us", "64-128us", "128-256us", "256-512us",
+    "512us-1ms", "1-2ms", "2-4ms", "4-8ms", "8-16ms",
+    "16-32ms", "32-64ms", "64-128ms", "128-256ms", "256-512ms",
+    ">512ms"
+]
+
+
+class Stats(ctypes.Structure):
+    _fields_ = [
+        ("rx_packets", ctypes.c_uint64),
+        ("tx_packets", ctypes.c_uint64),
+        ("rx_groups", ctypes.c_uint64),
+        ("complete_groups", ctypes.c_uint64),
+        ("latency_hist", ctypes.c_uint64 * LATENCY_BUCKETS),
+        ("total_latency_ns", ctypes.c_uint64),
+        ("min_latency_ns", ctypes.c_uint64),
+        ("max_latency_ns", ctypes.c_uint64),
+    ]
 
 
 class UdpGroupKey(ctypes.Structure):
@@ -705,6 +846,67 @@ class GroupTracker:
         print("Partial fragment drops: %d" % self.stats["partial_frag_drop"])
 
 
+class BPFMapScanner:
+    """Scan BPF group_map to detect internal drops in stats mode"""
+
+    def __init__(self, bpf, timeout_ns):
+        self.bpf = bpf
+        self.timeout_ns = timeout_ns
+        self.pending_groups = {}  # key -> first_seen_time (Python time)
+        self.internal_drop_count = 0
+
+    def scan_for_drops(self):
+        """Scan BPF group_map and detect internal drops"""
+        now = time.time()
+        timeout_sec = self.timeout_ns / 1e9
+        group_map = self.bpf["group_map"]
+        drops_detected = 0
+        keys_to_delete = []
+
+        for key, event in group_map.items():
+            # Create a hashable key tuple
+            key_tuple = (key.sip, key.dip, key.ip_id, key.sport, key.dport)
+
+            has_rx = event.ts[0] != 0
+            has_tx = event.ts[1] != 0
+
+            if has_rx and not has_tx:
+                # RX seen, TX not seen - potential drop
+                if key_tuple not in self.pending_groups:
+                    # First time seeing this incomplete entry
+                    self.pending_groups[key_tuple] = now
+                else:
+                    # Check if timeout exceeded
+                    age = now - self.pending_groups[key_tuple]
+                    if age > timeout_sec:
+                        drops_detected += 1
+                        self.internal_drop_count += 1
+                        keys_to_delete.append(key)
+                        del self.pending_groups[key_tuple]
+            elif has_rx and has_tx:
+                # Complete - remove from pending if exists
+                if key_tuple in self.pending_groups:
+                    del self.pending_groups[key_tuple]
+
+        # Delete timed-out entries from BPF map
+        for key in keys_to_delete:
+            try:
+                del group_map[key]
+            except:
+                pass
+
+        # Clean up stale pending entries (entries that disappeared from BPF map)
+        current_keys = set()
+        for key, _ in group_map.items():
+            current_keys.add((key.sip, key.dip, key.ip_id, key.sport, key.dport))
+
+        stale_keys = [k for k in self.pending_groups if k not in current_keys]
+        for k in stale_keys:
+            del self.pending_groups[k]
+
+        return drops_detected
+
+
 def main():
     if os.geteuid() != 0:
         print("This program must be run as root")
@@ -756,9 +958,18 @@ run separate instances with swapped src-ip/dst-ip.
     parser.add_argument('--timeout-ms', type=int, default=1000,
                         help='Timeout in ms to wait for complete group (default: 1000)')
     parser.add_argument('--verbose', action='store_true',
-                        help='Print all group events')
+                        help='Print all group events (mutually exclusive with --stats-mode)')
+    parser.add_argument('--stats-mode', action='store_true',
+                        help='Stats mode: periodic summary instead of per-packet output')
+    parser.add_argument('--stats-interval', type=int, default=10,
+                        help='Stats output interval in seconds (default: 10)')
 
     args = parser.parse_args()
+
+    # Validate mode options
+    if args.verbose and args.stats_mode:
+        print("Error: --verbose and --stats-mode are mutually exclusive")
+        sys.exit(1)
 
     # Validate IP addresses
     if not validate_ip(args.src_ip):
@@ -821,6 +1032,12 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
     print("RX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in rx_ifindexes))
     print("TX Interface(s): %s" % ', '.join("%s(ifindex=%d)" % (n, i) for n, i in tx_ifindexes))
     print("Timeout: %d ms" % args.timeout_ms)
+    if args.stats_mode:
+        print("Mode: Stats (interval=%ds)" % args.stats_interval)
+    elif args.verbose:
+        print("Mode: Verbose")
+    else:
+        print("Mode: Default (drops only)")
     print("")
     print("Flow path (single direction %s -> %s):" % (args.src_ip, args.dst_ip))
     print("  [0] RX at %s" % args.rx_iface)
@@ -830,6 +1047,9 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
     try:
         bpf_code = bpf_text % (src_ip_hex, dst_ip_hex, args.src_port, args.dst_port)
         bpf_code = bpf_code.replace("__IFACE_ARRAYS__", iface_arrays)
+        # Set stats mode
+        stats_mode_val = "1" if args.stats_mode else "0"
+        bpf_code = bpf_code.replace("__STATS_MODE__", stats_mode_val)
         b = BPF(text=bpf_code)
     except Exception as e:
         print("Error loading BPF program: %s" % e)
@@ -857,27 +1077,154 @@ static const int tx_ifindexes[TX_IFACE_COUNT] = {%s};
             if group["is_fragmented"]:
                 frag_str = " Frags(rx=%d,tx=%d)" % (
                     group["frag_count_rx"], group["frag_count_tx"])
-            print("%s [%s] IP_ID=%d%s%s %s" % (
-                now_str, action, ip_id, port_str, frag_str, ts_str))
+            # BPF timestamps (nanoseconds since boot, show in microseconds)
+            bpf_ts_rx = group["ts"][0] / 1000 if group["ts"][0] else 0
+            bpf_ts_tx = group["ts"][1] / 1000 if group["ts"][1] else 0
+            bpf_ts_str = " BPF_TS(us): RX=%.0f TX=%.0f" % (bpf_ts_rx, bpf_ts_tx) if bpf_ts_rx or bpf_ts_tx else ""
+            # Payload length
+            payload_str = " Len=%d" % group["total_payload"] if group["total_payload"] else ""
+            print("%s [%s] IP_ID=%d%s%s%s%s %s" % (
+                now_str, action, ip_id, port_str, payload_str, frag_str, bpf_ts_str, ts_str))
             if action == "complete":
                 lat_internal = (group["ts"][1] - group["ts"][0]) / 1000.0 if group["ts"][0] and group["ts"][1] else 0
                 print("  Latency(us): Internal=%.1f" % lat_internal)
                 print("-" * 80)
 
+    # Stats mode helper functions
+    def aggregate_percpu_stats():
+        """Aggregate per-CPU stats into single values"""
+        stats_map = b["stats_map"]
+        totals = {
+            "rx_packets": 0, "tx_packets": 0, "rx_groups": 0,
+            "complete_groups": 0, "total_latency_ns": 0,
+            "min_latency_ns": 0, "max_latency_ns": 0,
+            "latency_hist": [0] * LATENCY_BUCKETS
+        }
+        for cpu_stats in stats_map.values():
+            for s in cpu_stats:
+                totals["rx_packets"] += s.rx_packets
+                totals["tx_packets"] += s.tx_packets
+                totals["rx_groups"] += s.rx_groups
+                totals["complete_groups"] += s.complete_groups
+                totals["total_latency_ns"] += s.total_latency_ns
+                if s.min_latency_ns > 0:
+                    if totals["min_latency_ns"] == 0 or s.min_latency_ns < totals["min_latency_ns"]:
+                        totals["min_latency_ns"] = s.min_latency_ns
+                if s.max_latency_ns > totals["max_latency_ns"]:
+                    totals["max_latency_ns"] = s.max_latency_ns
+                for i in range(LATENCY_BUCKETS):
+                    totals["latency_hist"][i] += s.latency_hist[i]
+        return totals
+
+    def calculate_percentile(hist, percentile):
+        """Calculate percentile from histogram"""
+        total = sum(hist)
+        if total == 0:
+            return 0
+        target = total * percentile / 100.0
+        cumsum = 0
+        for i, count in enumerate(hist):
+            cumsum += count
+            if cumsum >= target:
+                # Return upper bound of bucket in us
+                return (1 << i) if i > 0 else 1
+        return (1 << (LATENCY_BUCKETS - 1))
+
+    def print_histogram(hist):
+        """Print latency histogram"""
+        max_count = max(hist) if hist else 0
+        if max_count == 0:
+            print("  (no data)")
+            return
+        bar_width = 40
+        for i, count in enumerate(hist):
+            if count > 0:
+                bar_len = int(count * bar_width / max_count)
+                bar = "*" * bar_len
+                print("  %12s: %8d |%s" % (BUCKET_LABELS[i], count, bar))
+
+    def print_stats_summary(stats, prev_stats, interval_start, interval_end, internal_drops=None):
+        """Print stats summary for interval"""
+        # Calculate deltas
+        delta = {}
+        for key in ["rx_packets", "tx_packets", "rx_groups", "complete_groups"]:
+            delta[key] = stats[key] - prev_stats.get(key, 0)
+
+        # Use provided internal_drops or calculate from tracker
+        if internal_drops is None:
+            internal_drops = tracker.stats.get("internal_drop", 0) - prev_stats.get("internal_drop_tracker", 0)
+
+        start_str = datetime.datetime.fromtimestamp(interval_start).strftime("%H:%M:%S")
+        end_str = datetime.datetime.fromtimestamp(interval_end).strftime("%H:%M:%S")
+
+        print("\n" + "=" * 70)
+        print("=== UDP Stats [%s - %s] ===" % (start_str, end_str))
+        print("=" * 70)
+        print("Packets:   RX=%d  TX=%d" % (delta["rx_packets"], delta["tx_packets"]))
+        print("Groups:    New=%d  Complete=%d  InternalDrop=%d" % (
+            delta["rx_groups"], delta["complete_groups"], internal_drops))
+
+        # Latency stats
+        if stats["complete_groups"] > 0:
+            avg_lat = stats["total_latency_ns"] / stats["complete_groups"] / 1000.0
+            min_lat = stats["min_latency_ns"] / 1000.0
+            max_lat = stats["max_latency_ns"] / 1000.0
+            p50 = calculate_percentile(stats["latency_hist"], 50)
+            p99 = calculate_percentile(stats["latency_hist"], 99)
+            print("Latency(us): Min=%.1f  Avg=%.1f  Max=%.1f  P50=%d  P99=%d" % (
+                min_lat, avg_lat, max_lat, p50, p99))
+
+        print("\nLatency Histogram:")
+        print_histogram(stats["latency_hist"])
+        print("")
+
     b["events"].open_perf_buffer(handle_event)
 
     print("Tracing... Hit Ctrl-C to end.\n")
 
-    try:
-        last_check = time.time()
-        while True:
-            b.perf_buffer_poll(timeout=100)
-            now = time.time()
-            if now - last_check >= 1.0:
-                tracker.check_timeouts()
-                last_check = now
-    except KeyboardInterrupt:
-        print("\nDetaching...")
+    if args.stats_mode:
+        # Stats mode main loop - use BPFMapScanner instead of GroupTracker
+        scanner = BPFMapScanner(b, args.timeout_ms * 1000000)
+        scan_interval = args.timeout_ms / 1000.0  # scan interval = timeout
+        prev_stats = {}
+        prev_internal_drops = 0
+        interval_start = time.time()
+        try:
+            while True:
+                time.sleep(scan_interval)
+                now = time.time()
+                # Scan BPF map for internal drops
+                scanner.scan_for_drops()
+
+                if now - interval_start >= args.stats_interval:
+                    stats = aggregate_percpu_stats()
+                    current_internal_drops = scanner.internal_drop_count
+                    interval_drops = current_internal_drops - prev_internal_drops
+                    stats["internal_drops_interval"] = interval_drops
+                    print_stats_summary(stats, prev_stats, interval_start, now, interval_drops)
+                    prev_stats = stats.copy()
+                    prev_internal_drops = current_internal_drops
+                    interval_start = now
+        except KeyboardInterrupt:
+            print("\nDetaching...")
+            # Final stats
+            stats = aggregate_percpu_stats()
+            stats["internal_drops_interval"] = scanner.internal_drop_count - prev_internal_drops
+            print_stats_summary(stats, prev_stats, interval_start, time.time(),
+                              scanner.internal_drop_count - prev_internal_drops)
+            print("Total Internal Drops: %d" % scanner.internal_drop_count)
+    else:
+        # Verbose/default mode main loop
+        try:
+            last_check = time.time()
+            while True:
+                b.perf_buffer_poll(timeout=100)
+                now = time.time()
+                if now - last_check >= 1.0:
+                    tracker.check_timeouts()
+                    last_check = now
+        except KeyboardInterrupt:
+            print("\nDetaching...")
         tracker.check_timeouts()
         tracker.print_stats()
 
