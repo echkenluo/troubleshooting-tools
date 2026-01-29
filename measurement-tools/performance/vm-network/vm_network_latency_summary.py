@@ -189,6 +189,22 @@ struct stage_pair_key_t {
     u8 latency_bucket;  // log2 of latency in microseconds
 };
 
+// Flow key for per-flow total latency aggregation
+struct flow_key_t {
+    __be32 sip;
+    __be32 dip;
+    __be16 sport;
+    __be16 dport;
+    u8  protocol;
+    u8  pad[3];
+};
+
+struct flow_bucket_key_t {
+    struct flow_key_t flow;
+    u8  latency_bucket;   // log2(us), 0-14
+    u8  pad[3];
+};
+
 // Maps
 BPF_TABLE("lru_hash", struct packet_key_t, struct flow_data_t, flow_sessions, 10240);
 
@@ -198,6 +214,9 @@ BPF_HISTOGRAM(adjacent_latency_hist, struct stage_pair_key_t, 1024);
 
 // BPF Histogram for total end-to-end latency - simple u8 key for direction
 BPF_HISTOGRAM(total_latency_hist, u8, 256);
+
+// BPF Histogram for per-flow total latency - keyed by (flow, bucket)
+BPF_HISTOGRAM(flow_total_hist, struct flow_bucket_key_t, 10240);
 
 // Performance statistics
 BPF_ARRAY(packet_counters, u64, 4);  // 0=total, 1=vnet_rx, 2=vnet_tx, 3=dropped
@@ -611,6 +630,24 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
             if (latency_us > 0) {
                 u8 log2_latency = bpf_log2l(latency_us);
                 total_latency_hist.increment(log2_latency);
+
+                // Per-flow total latency histogram
+                struct flow_bucket_key_t fb_key = {};
+                fb_key.flow.sip = key.sip;
+                fb_key.flow.dip = key.dip;
+                fb_key.flow.protocol = key.proto;
+                if (key.proto == IPPROTO_TCP) {
+                    fb_key.flow.sport = key.tcp.source;
+                    fb_key.flow.dport = key.tcp.dest;
+                } else if (key.proto == IPPROTO_UDP) {
+                    fb_key.flow.sport = key.udp.source;
+                    fb_key.flow.dport = key.udp.dest;
+                } else if (key.proto == IPPROTO_ICMP) {
+                    fb_key.flow.sport = key.icmp.id;
+                    fb_key.flow.dport = key.icmp.sequence;
+                }
+                fb_key.latency_bucket = log2_latency;
+                flow_total_hist.increment(fb_key, 1);
             }
         }
         
@@ -798,6 +835,154 @@ class StagePairKey(ctypes.Structure):
         ("pad", ctypes.c_uint8)
     ]
 
+# ctypes structures for per-flow total latency
+class FlowKey(ctypes.Structure):
+    _fields_ = [
+        ("sip", ctypes.c_uint32),
+        ("dip", ctypes.c_uint32),
+        ("sport", ctypes.c_uint16),
+        ("dport", ctypes.c_uint16),
+        ("protocol", ctypes.c_uint8),
+        ("pad", ctypes.c_uint8 * 3),
+    ]
+
+class FlowBucketKey(ctypes.Structure):
+    _fields_ = [
+        ("flow", FlowKey),
+        ("latency_bucket", ctypes.c_uint8),
+        ("pad", ctypes.c_uint8 * 3),
+    ]
+
+def format_protocol(proto):
+    """Convert protocol number to name"""
+    proto_names = {6: "TCP", 17: "UDP", 1: "ICMP"}
+    return proto_names.get(proto, "PROTO_%d" % proto)
+
+def bucket_range_str(bucket):
+    """Convert log2 bucket to human-readable latency range string"""
+    if bucket == 0:
+        return "1us"
+    low = 1 << (bucket - 1)
+    high = (1 << bucket) - 1
+    # Use more readable units for large values
+    if low >= 1000000:
+        return "%gs-%gs" % (low / 1000000.0, high / 1000000.0)
+    elif low >= 1000:
+        return "%g-%gms" % (low / 1000.0, high / 1000.0)
+    return "%d-%dus" % (low, high)
+
+def bucket_midpoint_us(bucket):
+    """Approximate midpoint of a log2 bucket in microseconds"""
+    if bucket == 0:
+        return 0.5
+    return 1.5 * (1 << (bucket - 1))
+
+def compute_flow_stats(bucket_counts):
+    """Compute statistics from a dict of {bucket: count}.
+
+    Returns dict with keys: count, avg, p50, p90, p99, min_bucket, max_bucket
+    """
+    total = sum(bucket_counts.values())
+    if total == 0:
+        return None
+
+    sorted_buckets = sorted(bucket_counts.items())
+    min_bucket = sorted_buckets[0][0]
+    max_bucket = sorted_buckets[-1][0]
+
+    # Weighted average
+    weighted_sum = sum(bucket_midpoint_us(b) * c for b, c in sorted_buckets)
+    avg = weighted_sum / total
+
+    # Percentiles from CDF
+    percentiles = {"p50": 0.50, "p90": 0.90, "p99": 0.99}
+    result = {"count": total, "avg": avg, "min_bucket": min_bucket, "max_bucket": max_bucket}
+
+    cumulative = 0
+    pct_keys = sorted(percentiles.keys(), key=lambda k: percentiles[k])
+    pct_idx = 0
+    for bucket, count in sorted_buckets:
+        cumulative += count
+        while pct_idx < len(pct_keys) and cumulative >= percentiles[pct_keys[pct_idx]] * total:
+            result[pct_keys[pct_idx]] = bucket
+            pct_idx += 1
+    # Fill remaining percentiles with max bucket
+    while pct_idx < len(pct_keys):
+        result[pct_keys[pct_idx]] = max_bucket
+        pct_idx += 1
+
+    return result
+
+def print_per_flow_stats(b, sort_by, top_n):
+    """Read flow_total_hist and print per-flow latency statistics"""
+    flow_hist = b["flow_total_hist"]
+
+    # Group by flow
+    flow_data = {}  # (sip, dip, sport, dport, proto) -> {bucket: count}
+    for k, v in flow_hist.items():
+        fk = k.flow
+        flow_tuple = (fk.sip, fk.dip, fk.sport, fk.dport, fk.protocol)
+        bucket = k.latency_bucket
+        count = v.value if hasattr(v, 'value') else int(v)
+        if count <= 0:
+            continue
+        if flow_tuple not in flow_data:
+            flow_data[flow_tuple] = {}
+        flow_data[flow_tuple][bucket] = count
+
+    if not flow_data:
+        print("\n  No per-flow total latency data collected in this interval")
+        return
+
+    # Compute stats per flow
+    flow_stats = []
+    for flow_tuple, buckets in flow_data.items():
+        stats = compute_flow_stats(buckets)
+        if stats:
+            flow_stats.append((flow_tuple, stats))
+
+    # Sort
+    sort_key_map = {
+        "count": lambda x: x[1]["count"],
+        "avg":   lambda x: x[1]["avg"],
+        "p90":   lambda x: x[1]["p90"],
+        "p99":   lambda x: x[1]["p99"],
+    }
+    key_fn = sort_key_map.get(sort_by, sort_key_map["count"])
+    flow_stats.sort(key=key_fn, reverse=True)
+
+    shown = min(top_n, len(flow_stats))
+    print("\nPer-Flow Total Latency Statistics (approx values from log2 histogram):")
+    print("  Flows: %d, Sorted by: %s (desc), Showing top %d" % (len(flow_stats), sort_by, shown))
+
+    for idx, (flow_tuple, stats) in enumerate(flow_stats[:shown]):
+        sip, dip, sport, dport, proto = flow_tuple
+        sip_str = format_ip(sip)
+        dip_str = format_ip(dip)
+        proto_str = format_protocol(proto)
+
+        # Ports are in network byte order, convert to host order
+        sport_h = socket.ntohs(sport)
+        dport_h = socket.ntohs(dport)
+
+        if proto == 1:  # ICMP: sport=id, dport=seq
+            flow_label = "%s -> %s (%s id=%d seq=%d)" % (
+                sip_str, dip_str, proto_str, sport_h, dport_h)
+        else:
+            flow_label = "%s:%d -> %s:%d (%s)" % (
+                sip_str, sport_h, dip_str, dport_h, proto_str)
+
+        avg_str = "%dus" % int(stats["avg"]) if stats["avg"] < 1000 else "%.1fms" % (stats["avg"] / 1000)
+        p50_str = bucket_range_str(stats["p50"])
+        p90_str = bucket_range_str(stats["p90"])
+        p99_str = bucket_range_str(stats["p99"])
+        min_str = bucket_range_str(stats["min_bucket"])
+        max_str = bucket_range_str(stats["max_bucket"])
+
+        print("\n  #%d  %s" % (idx + 1, flow_label))
+        print("      Count: %-6d Avg~: %-8s P50~: %-12s P90~: %-12s P99~: %-12s Min: %-12s Max: %s" % (
+            stats["count"], avg_str, p50_str, p90_str, p99_str, min_str, max_str))
+
 # Helper Functions
 def get_if_index(devname):
     """Get the interface index for a device name"""
@@ -861,7 +1046,7 @@ def get_stage_name(stage_id):
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
-def print_histogram_summary(b, interval_start_time):
+def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10):
     """Print histogram summary for the current interval"""
     current_time = datetime.datetime.now()
     print("\n" + "=" * 80)
@@ -1019,13 +1204,22 @@ def print_histogram_summary(b, interval_start_time):
             print("  No total latency data collected in this interval")
     except Exception as e:
         print("  Error reading total latency histogram: %s" % str(e))
-    
-    
+
+    # Per-flow total latency statistics
+    try:
+        print_per_flow_stats(b, sort_by, top_n)
+    except Exception as e:
+        print("  Error reading per-flow latency data: %s" % str(e))
+
     # Clear histograms for next interval
     latency_hist.clear()
     try:
         total_hist = b["total_latency_hist"]
         total_hist.clear()
+    except:
+        pass
+    try:
+        b["flow_total_hist"].clear()
     except:
         pass
 
@@ -1072,7 +1266,11 @@ Examples:
                         help='Statistics output interval in seconds (default: 5)')
     parser.add_argument('--enable-ct', action='store_true',
                         help='Enable conntrack measurement (enabled by default)')
-    
+    parser.add_argument('--sort-by', type=str, choices=['count', 'avg', 'p90', 'p99'],
+                        default='count', help='Sort per-flow stats by metric (default: count)')
+    parser.add_argument('--top', type=int, default=10,
+                        help='Number of top flows to display (default: 10)')
+
     args = parser.parse_args()
     
     # Convert parameters
@@ -1123,6 +1321,7 @@ Examples:
     print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, phy_ifindex1, phy_ifindex2))
     print("Statistics interval: %d seconds" % args.interval)
     print("Conntrack measurement: ENABLED")
+    print("Per-flow stats: sort-by=%s, top=%d" % (args.sort_by, args.top))
     print("Mode: Adjacent stage latency tracking only")
     
     try:
@@ -1155,19 +1354,19 @@ Examples:
     # Setup signal handler for clean exit
     def signal_handler(sig, frame):
         print("\n\nFinal statistics:")
-        print_histogram_summary(b, interval_start_time)
+        print_histogram_summary(b, interval_start_time, args.sort_by, args.top)
         print("\nExiting...")
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     # Main loop
     interval_start_time = time_time()
-    
+
     try:
         while True:
             sleep(args.interval)
-            print_histogram_summary(b, interval_start_time)
+            print_histogram_summary(b, interval_start_time, args.sort_by, args.top)
             interval_start_time = time_time()
     except KeyboardInterrupt:
         pass
