@@ -111,6 +111,7 @@ bpf_text = """
 #define PHY_IFINDEX1 %d
 #define PHY_IFINDEX2 %d
 #define DIRECTION_FILTER %d  // 1=vnet_rx, 2=vnet_tx
+#define STAGE_LATENCY_MODE %d  // 0=total-only, 1=per-stage breakdown
 
 // Stage definitions - vnet perspective
 // VNET RX path (VM TX, packets from VM to external)
@@ -208,9 +209,11 @@ struct flow_bucket_key_t {
 // Maps
 BPF_TABLE("lru_hash", struct packet_key_t, struct flow_data_t, flow_sessions, 10240);
 
+#if STAGE_LATENCY_MODE
 // BPF Histogram for adjacent stage latencies - with stage pair as key
-// BPF_HISTOGRAM supports struct keys for creating separate histograms per key
 BPF_HISTOGRAM(adjacent_latency_hist, struct stage_pair_key_t, 1024);
+BPF_ARRAY(stage_pair_counters, u64, 32);
+#endif
 
 // BPF Histogram for total end-to-end latency - simple u8 key for direction
 BPF_HISTOGRAM(total_latency_hist, u8, 256);
@@ -220,7 +223,6 @@ BPF_HISTOGRAM(flow_total_hist, struct flow_bucket_key_t, 10240);
 
 // Performance statistics
 BPF_ARRAY(packet_counters, u64, 4);  // 0=total, 1=vnet_rx, 2=vnet_tx, 3=dropped
-BPF_ARRAY(stage_pair_counters, u64, 32);  // Count of stage pairs seen
 BPF_ARRAY(flow_stage_counters, u64, 4);  // 0=first_stage_rx, 1=last_stage_rx, 2=first_stage_tx, 3=last_stage_tx
 
 // Helper functions
@@ -591,29 +593,31 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         return;
     }
     
+#if STAGE_LATENCY_MODE
     // Calculate and submit latency for adjacent stages
     if (flow_ptr->last_stage > 0 && flow_ptr->last_timestamp > 0) {
         u64 prev_ts = flow_ptr->last_timestamp;
-        
+
         if (current_ts > prev_ts) {
             u64 latency_ns = current_ts - prev_ts;
             u64 latency_us = latency_ns / 1000;
-            
+
             // Create stage pair key with latency bucket
             struct stage_pair_key_t pair_key = {};
             pair_key.prev_stage = flow_ptr->last_stage;
             pair_key.curr_stage = stage_id;
             pair_key.direction = direction;
             pair_key.latency_bucket = bpf_log2l(latency_us + 1);
-            
+
             // Update histogram
             adjacent_latency_hist.increment(pair_key, 1);
         }
     }
-    
+
     // Update tracking for next stage
     flow_ptr->last_stage = stage_id;
     flow_ptr->last_timestamp = current_ts;
+#endif
     
     // Check if this is the last stage
     bool is_last_stage = false;
@@ -682,9 +686,10 @@ RAW_TRACEPOINT_PROBE(netif_receive_skb) {
     return 0;
 }
 
+#if STAGE_LATENCY_MODE
 int kprobe__ovs_vport_receive(struct pt_regs *ctx, void *vport, struct sk_buff *skb, void *tun_info) {
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_OVS_RX, 1);
     }
@@ -696,50 +701,51 @@ int kprobe__ovs_vport_receive(struct pt_regs *ctx, void *vport, struct sk_buff *
 
 int kprobe__nf_conntrack_in(struct pt_regs *ctx, struct net *net, u_int8_t pf, unsigned int hooknum, struct sk_buff *skb) {
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_CT_RX, 1);
     }
     if (DIRECTION_FILTER != 1) {
         handle_stage_event(ctx, skb, STG_CT_TX, 2);
     }
-    
+
     return 0;
 }
 
 int kprobe__ovs_dp_upcall(struct pt_regs *ctx, void *dp, const struct sk_buff *skb_const) {
     struct sk_buff *skb = (struct sk_buff *)skb_const;
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_OVS_UPCALL_RX, 1);
     }
     if (DIRECTION_FILTER != 1) {
         handle_stage_event(ctx, skb, STG_OVS_UPCALL_TX, 2);
     }
-    
+
     return 0;
 }
 
 int kprobe__ovs_flow_key_extract_userspace(struct pt_regs *ctx, struct net *net, const struct nlattr *attr, struct sk_buff *skb) {
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_OVS_USERSPACE_RX, 1);
     }
     if (DIRECTION_FILTER != 1) {
         handle_stage_event(ctx, skb, STG_OVS_USERSPACE_TX, 2);
     }
-    
+
     return 0;
 }
+#endif
 
+#if STAGE_LATENCY_MODE
 // Manual attach - function name varies by kernel/compiler (GCC clone suffixes)
 int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
     if (!skb) return 0;
 
     if (post_ct) {
-        // Conntrack action phase
         if (DIRECTION_FILTER != 2) {
             handle_stage_event(ctx, skb, STG_CT_OUT_RX, 1);
         }
@@ -747,7 +753,6 @@ int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info
             handle_stage_event(ctx, skb, STG_CT_OUT_TX, 2);
         }
     } else {
-        // Flow extract phase
         if (DIRECTION_FILTER != 2) {
             handle_stage_event(ctx, skb, STG_FLOW_EXTRACT_END_RX, 1);
         }
@@ -763,45 +768,48 @@ int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info
 RAW_TRACEPOINT_PROBE(net_dev_queue) {
     struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_QDISC_ENQ, 1);
     }
-    
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
         handle_stage_event(ctx, skb, STG_VNET_QDISC_ENQ, 2);
     }
-    
+
     return 0;
 }
 
-// Qdisc dequeue tracepoint 
+// Qdisc dequeue tracepoint
 RAW_TRACEPOINT_PROBE(qdisc_dequeue) {
     struct sk_buff *skb = (struct sk_buff *)ctx->args[3];
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_QDISC_DEQ, 1);
     }
-    
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
         handle_stage_event(ctx, skb, STG_VNET_QDISC_DEQ, 2);
     }
-    
+
     return 0;
 }
+#endif
 
 int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
     if (!skb) return 0;
 
+#if STAGE_LATENCY_MODE
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_TX_QUEUE, 1);
     }
+#endif
 
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
@@ -1057,16 +1065,116 @@ def get_stage_name(stage_id):
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
-def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10):
+def _print_counters_and_total(b, sort_by, top_n):
+    """Print packet counters, total latency histogram, and per-flow stats"""
+    # Print packet counters
+    counters = b["packet_counters"]
+    print("\nPacket Counters:")
+    print("  VM TX packets: %d" % counters[1].value)
+    print("  VM RX packets: %d" % counters[2].value)
+
+    # Calculate incomplete flows using counter method
+    flow_counters = b["flow_stage_counters"]
+
+    first_stage_rx = flow_counters[0].value
+    last_stage_rx = flow_counters[1].value
+    first_stage_tx = flow_counters[2].value
+    last_stage_tx = flow_counters[3].value
+
+    incomplete_rx_count = first_stage_rx - last_stage_rx
+    incomplete_tx_count = first_stage_tx - last_stage_tx
+
+    print("\nFlow Session Analysis (Counter-based):")
+    print("  VM TX started: %d, completed: %d, incomplete: %d" % (
+        first_stage_rx, last_stage_rx, incomplete_rx_count))
+    print("  VM RX started: %d, completed: %d, incomplete: %d" % (
+        first_stage_tx, last_stage_tx, incomplete_tx_count))
+
+    total_active_flows = 0
+    try:
+        flow_sessions = b["flow_sessions"]
+        total_active_flows = len(flow_sessions)
+    except:
+        total_active_flows = -1
+
+    if total_active_flows >= 0:
+        print("  Currently active flow sessions: %d" % total_active_flows)
+    else:
+        print("  Flow sessions table not accessible")
+
+    # Display total latency histogram (end-to-end latency)
+    print("\nTotal End-to-End Latency Distribution (First Stage -> Last Stage):")
+    print("-" * 60)
+
+    try:
+        total_hist = b["total_latency_hist"]
+        total_latency_data = {}
+
+        for k, v in total_hist.items():
+            bucket = k.value if hasattr(k, 'value') else int(k)
+            count = v.value if hasattr(v, 'value') else int(v)
+            if count > 0:
+                total_latency_data[bucket] = count
+
+        if total_latency_data:
+            max_count = max(total_latency_data.values())
+
+            for bucket in sorted(total_latency_data.keys()):
+                count = total_latency_data[bucket]
+
+                if bucket == 0:
+                    range_str = "1us"
+                else:
+                    low = 1 << (bucket - 1)
+                    high = (1 << bucket) - 1
+                    range_str = "%d-%dus" % (low, high)
+
+                bar_width = int(40 * count / max_count)
+                bar = "*" * bar_width
+
+                print("  %-12s: %6d |%-40s|" % (range_str, count, bar))
+        else:
+            print("  No total latency data collected in this interval")
+    except Exception as e:
+        print("  Error reading total latency histogram: %s" % str(e))
+
+    # Per-flow total latency statistics
+    try:
+        print_per_flow_stats(b, sort_by, top_n)
+    except Exception as e:
+        print("  Error reading per-flow latency data: %s" % str(e))
+
+    # Clear total/flow histograms for next interval
+    try:
+        b["total_latency_hist"].clear()
+    except:
+        pass
+    try:
+        b["flow_total_hist"].clear()
+    except:
+        pass
+
+def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10, stage_latency=False):
     """Print histogram summary for the current interval"""
     current_time = datetime.datetime.now()
     print("\n" + "=" * 80)
-    print("[%s] Adjacent Stage Latency Report (Interval: %.1fs)" % (
-        current_time.strftime("%Y-%m-%d %H:%M:%S"),
-        time_time() - interval_start_time
-    ))
+    if stage_latency:
+        print("[%s] Stage + Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
+    else:
+        print("[%s] Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
     print("=" * 80)
-    
+
+    if not stage_latency:
+        # Skip stage pair histogram, go directly to counters and total latency
+        _print_counters_and_total(b, sort_by, top_n)
+        return
+
     # Get stage pair histogram data
     latency_hist = b["adjacent_latency_hist"]
     
@@ -1142,97 +1250,10 @@ def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10):
                     
                     print("      %-12s: %6d |%-40s|" % (range_str, count, bar))
     
-    # Print packet counters
-    counters = b["packet_counters"]
-    print("\nPacket Counters:")
-    print("  VM TX packets: %d" % counters[1].value)
-    print("  VM RX packets: %d" % counters[2].value)
-    
-    # Calculate incomplete flows using counter method
-    flow_counters = b["flow_stage_counters"]
-    
-    first_stage_rx = flow_counters[0].value    # Count of flows that started (VNET_RX)
-    last_stage_rx = flow_counters[1].value     # Count of flows that completed (TX_XMIT) 
-    first_stage_tx = flow_counters[2].value    # Count of flows that started (PHY_RX)
-    last_stage_tx = flow_counters[3].value     # Count of flows that completed (VNET_TX)
-    
-    incomplete_rx_count = first_stage_rx - last_stage_rx
-    incomplete_tx_count = first_stage_tx - last_stage_tx
-    
-    print("\nFlow Session Analysis (Counter-based):")
-    print("  VM TX started: %d, completed: %d, incomplete: %d" % (
-        first_stage_rx, last_stage_rx, incomplete_rx_count))
-    print("  VM RX started: %d, completed: %d, incomplete: %d" % (
-        first_stage_tx, last_stage_tx, incomplete_tx_count))
-    
-    # Also try to check flow_sessions table for additional debug info
-    total_active_flows = 0
-    try:
-        flow_sessions = b["flow_sessions"]
-        total_active_flows = len(flow_sessions)
-    except:
-        total_active_flows = -1
-    
-    if total_active_flows >= 0:
-        print("  Currently active flow sessions: %d" % total_active_flows)
-    else:
-        print("  Flow sessions table not accessible")
-    
-    # Display total latency histogram (end-to-end latency)
-    print("\nTotal End-to-End Latency Distribution (First Stage -> Last Stage):")
-    print("-" * 60)
-    
-    try:
-        total_hist = b["total_latency_hist"]
-        total_latency_data = {}
-        
-        for k, v in total_hist.items():
-            bucket = k.value if hasattr(k, 'value') else int(k)
-            count = v.value if hasattr(v, 'value') else int(v)
-            if count > 0:
-                total_latency_data[bucket] = count
-        
-        if total_latency_data:
-            max_count = max(total_latency_data.values())
-            
-            for bucket in sorted(total_latency_data.keys()):
-                count = total_latency_data[bucket]
-                
-                # Calculate latency range for this bucket
-                if bucket == 0:
-                    range_str = "1us"
-                else:
-                    low = 1 << (bucket - 1)  # 2^(bucket-1)
-                    high = (1 << bucket) - 1  # 2^bucket - 1
-                    range_str = "%d-%dus" % (low, high)
-                
-                # Create simple bar graph
-                bar_width = int(40 * count / max_count)
-                bar = "*" * bar_width
-                
-                print("  %-12s: %6d |%-40s|" % (range_str, count, bar))
-        else:
-            print("  No total latency data collected in this interval")
-    except Exception as e:
-        print("  Error reading total latency histogram: %s" % str(e))
+    _print_counters_and_total(b, sort_by, top_n)
 
-    # Per-flow total latency statistics
-    try:
-        print_per_flow_stats(b, sort_by, top_n)
-    except Exception as e:
-        print("  Error reading per-flow latency data: %s" % str(e))
-
-    # Clear histograms for next interval
+    # Clear stage latency histogram for next interval
     latency_hist.clear()
-    try:
-        total_hist = b["total_latency_hist"]
-        total_hist.clear()
-    except:
-        pass
-    try:
-        b["flow_total_hist"].clear()
-    except:
-        pass
 
 def main():
     if os.geteuid() != 0:
@@ -1277,6 +1298,8 @@ Examples:
                         help='Statistics output interval in seconds (default: 5)')
     parser.add_argument('--enable-ct', action='store_true',
                         help='Enable conntrack measurement (enabled by default)')
+    parser.add_argument('--stage-latency', action='store_true',
+                        help='Enable per-stage adjacent latency measurement (adds ~10 probes, higher overhead)')
     parser.add_argument('--sort-by', type=str, choices=['count', 'avg', 'p90', 'p99'],
                         default='count', help='Sort per-flow stats by metric (default: count)')
     parser.add_argument('--top', type=int, default=10,
@@ -1331,33 +1354,37 @@ Examples:
     print("VM interface: %s (ifindex %d)" % (args.vm_interface, vm_ifindex))
     print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, phy_ifindex1, phy_ifindex2))
     print("Statistics interval: %d seconds" % args.interval)
-    print("Conntrack measurement: ENABLED")
+    stage_latency_mode = 1 if args.stage_latency else 0
+    if args.stage_latency:
+        print("Per-stage latency: ENABLED")
     print("Per-flow stats: sort-by=%s, top=%d" % (args.sort_by, args.top))
-    print("Mode: Adjacent stage latency tracking only")
-    
+    if args.stage_latency:
+        print("Mode: Per-flow + per-stage latency breakdown")
+    else:
+        print("Mode: Per-flow latency statistics")
+
     try:
         b = BPF(text=bpf_text % (
             src_ip_hex, dst_ip_hex, src_port, dst_port,
-            protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2, direction_filter
+            protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2,
+            direction_filter, stage_latency_mode
         ))
         print("BPF program loaded successfully")
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
 
-    # Manual attachment for ovs_ct_update_key (function name varies by kernel/compiler)
-    # GCC may generate optimized clones: .isra.N, .constprop.N, .part.N
-    ovs_ct_func = find_kernel_function("ovs_ct_update_key")
-    if ovs_ct_func:
-        try:
-            b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
-            print("Attached kprobe to %s" % ovs_ct_func)
-        except Exception as e:
-            print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
-            print("         CT flow tracking will be disabled")
-    else:
-        print("Warning: ovs_ct_update_key not found in kallsyms")
-        print("         CT flow tracking will be disabled")
+    # Manual attachment for ovs_ct_update_key (only in stage-latency mode)
+    if args.stage_latency:
+        ovs_ct_func = find_kernel_function("ovs_ct_update_key")
+        if ovs_ct_func:
+            try:
+                b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
+                print("Attached kprobe to %s" % ovs_ct_func)
+            except Exception as e:
+                print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
+        else:
+            print("Warning: ovs_ct_update_key not found in kallsyms")
     
     print("\nCollecting adjacent stage latency data... Hit Ctrl-C to end.")
     print("Statistics will be displayed every %d seconds\n" % args.interval)
@@ -1365,7 +1392,7 @@ Examples:
     # Setup signal handler for clean exit
     def signal_handler(sig, frame):
         print("\n\nFinal statistics:")
-        print_histogram_summary(b, interval_start_time, args.sort_by, args.top)
+        print_histogram_summary(b, interval_start_time, args.sort_by, args.top, args.stage_latency)
         print("\nExiting...")
         sys.exit(0)
 
@@ -1377,7 +1404,7 @@ Examples:
     try:
         while True:
             sleep(args.interval)
-            print_histogram_summary(b, interval_start_time, args.sort_by, args.top)
+            print_histogram_summary(b, interval_start_time, args.sort_by, args.top, args.stage_latency)
             interval_start_time = time_time()
     except KeyboardInterrupt:
         pass

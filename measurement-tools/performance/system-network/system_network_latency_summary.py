@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-System Network Adjacent Stage Latency Histogram Tool
+System Network Latency Summary Tool
 
-Measures latency distribution between adjacent network stack stages using BPF_HISTOGRAM.
-Only tracks latencies between consecutive processing stages in the actual packet path.
+Measures total end-to-end latency and per-flow latency distribution through the
+system network stack. Supports optional per-stage adjacent latency breakdown.
+
+Default mode: Only total latency with per-flow statistics (minimal probes).
+Stage mode (--stage-latency): Adds per-stage adjacent latency measurement.
 
 Based on:
 - system_network_latency_details.py: Stage definitions and probe points
@@ -14,6 +17,8 @@ Based on:
 Usage:
     sudo ./system_network_latency_summary.py --phy-interface enp94s0f0np0 \
                                 --src-ip 70.0.0.33 --direction tx --interval 5
+    sudo ./system_network_latency_summary.py --phy-interface enp94s0f0np0 \
+                                --direction tx --stage-latency --sort-by p90 --top 20
 
 """
 
@@ -54,6 +59,7 @@ bpf_text = """
 #include <linux/skbuff.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/icmp.h>
 #include <linux/ip.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
@@ -71,10 +77,11 @@ struct inet_cork;
 #define DST_IP_FILTER 0x%x
 #define SRC_PORT_FILTER %d
 #define DST_PORT_FILTER %d
-#define PROTOCOL_FILTER %d  // 0=all, 6=TCP, 17=UDP
+#define PROTOCOL_FILTER %d  // 0=all, 6=TCP, 17=UDP, 1=ICMP
 #define TARGET_IFINDEX1 %d
 #define TARGET_IFINDEX2 %d
 #define DIRECTION_FILTER %d  // 1=tx, 2=rx
+#define STAGE_LATENCY_MODE %d  // 0=total-only, 1=per-stage breakdown
 
 // Stage definitions - from system_network_latency_details.py
 // TX direction stages (System -> Physical)
@@ -93,7 +100,7 @@ struct inet_cork;
 #define RX_STAGE_3    10 // ovs_dp_upcall
 #define RX_STAGE_4    11 // ovs_flow_key_extract_userspace
 #define RX_STAGE_5    12 // ovs_vport_send
-#define RX_STAGE_6    13 // tcp_v4_rcv/udp_rcv (protocol specific)
+#define RX_STAGE_6    13 // tcp_v4_rcv/udp_rcv/icmp_rcv (protocol specific)
 
 #define MAX_STAGES               14
 #define IFNAMSIZ                 16
@@ -119,6 +126,14 @@ struct packet_key_t {
             __be16 udp_len;
             __be16 frag_off;     // Fragment offset
         } udp;
+
+        struct {
+            __be16 id;
+            __be16 sequence;
+            u8 type;
+            u8 code;
+            u8 pad2[2];
+        } icmp;
     };
 };
 
@@ -139,14 +154,35 @@ struct stage_pair_key_t {
     u8 latency_bucket;  // log2 of latency in microseconds
 };
 
+// Per-flow aggregation key (5-tuple)
+struct flow_key_t {
+    __be32 sip;
+    __be32 dip;
+    __be16 sport;
+    __be16 dport;
+    u8  protocol;
+    u8  pad[3];
+};
+
+struct flow_bucket_key_t {
+    struct flow_key_t flow;
+    u8  latency_bucket;   // log2(us)
+    u8  pad[3];
+};
+
 // Maps
 BPF_TABLE("lru_hash", struct packet_key_t, struct flow_data_t, flow_sessions, 10240);
 
+#if STAGE_LATENCY_MODE
 // BPF Histogram for adjacent stage latencies
 BPF_HISTOGRAM(adjacent_latency_hist, struct stage_pair_key_t, 1024);
+#endif
 
 // BPF Histogram for total end-to-end latency
 BPF_HISTOGRAM(total_latency_hist, u8, 256);
+
+// BPF Histogram for per-flow total latency
+BPF_HISTOGRAM(flow_total_hist, struct flow_bucket_key_t, 10240);
 
 // Performance statistics
 BPF_ARRAY(packet_counters, u64, 4);  // 0=total, 1=tx, 2=rx, 3=dropped
@@ -405,6 +441,17 @@ static __always_inline int parse_packet_key_userspace(
 
             break;
         }
+        case IPPROTO_ICMP: {
+            struct icmphdr icmp;
+            if (bpf_probe_read_kernel(&icmp, sizeof(icmp), skb_head + trans_offset) < 0) {
+                return 0;
+            }
+            key->icmp.id = icmp.un.echo.id;
+            key->icmp.sequence = icmp.un.echo.sequence;
+            key->icmp.type = icmp.type;
+            key->icmp.code = icmp.code;
+            break;
+        }
         default:
             return 0;
     }
@@ -460,6 +507,15 @@ static __always_inline int parse_packet_key(
                 }
             }
             break;
+        case IPPROTO_ICMP: {
+            struct icmphdr icmp;
+            if (get_transport_header(skb, &icmp, sizeof(icmp), stage_id) != 0) return 0;
+            key->icmp.id = icmp.un.echo.id;
+            key->icmp.sequence = icmp.un.echo.sequence;
+            key->icmp.type = icmp.type;
+            key->icmp.code = icmp.code;
+            break;
+        }
         default:
             return 0;
     }
@@ -594,28 +650,26 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         return;
     }
 
+#if STAGE_LATENCY_MODE
     // Calculate and submit latency for adjacent stages
-    // Check last_timestamp > 0 to ensure there's a previous stage
-    // Note: last_stage can be 0 (TX_STAGE_0), so we check timestamp instead
     if (flow_ptr->last_timestamp > 0 && flow_ptr->last_timestamp < current_ts) {
         u64 prev_ts = flow_ptr->last_timestamp;
         u64 latency_ns = current_ts - prev_ts;
         u64 latency_us = latency_ns / 1000;
 
-        // Create stage pair key with latency bucket
         struct stage_pair_key_t pair_key = {};
         pair_key.prev_stage = flow_ptr->last_stage;
         pair_key.curr_stage = stage_id;
         pair_key.direction = direction;
         pair_key.latency_bucket = bpf_log2l(latency_us + 1);
 
-        // Update histogram
         adjacent_latency_hist.increment(pair_key, 1);
     }
 
     // Update tracking for next stage
     flow_ptr->last_stage = stage_id;
     flow_ptr->last_timestamp = current_ts;
+#endif
 
     // Check if this is the last stage
     bool is_last_stage = false;
@@ -627,11 +681,28 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         if (flow_ptr->first_timestamp > 0 && current_ts > flow_ptr->first_timestamp) {
             u64 total_latency = current_ts - flow_ptr->first_timestamp;
 
-            // Convert to microseconds and calculate log2 bucket
             u64 latency_us = total_latency / 1000;
             if (latency_us > 0) {
                 u8 log2_latency = bpf_log2l(latency_us);
                 total_latency_hist.increment(log2_latency);
+
+                // Per-flow total latency histogram
+                struct flow_bucket_key_t fb_key = {};
+                fb_key.flow.sip = key.src_ip;
+                fb_key.flow.dip = key.dst_ip;
+                fb_key.flow.protocol = key.protocol;
+                if (key.protocol == IPPROTO_TCP) {
+                    fb_key.flow.sport = key.tcp.src_port;
+                    fb_key.flow.dport = key.tcp.dst_port;
+                } else if (key.protocol == IPPROTO_UDP) {
+                    fb_key.flow.sport = key.udp.src_port;
+                    fb_key.flow.dport = key.udp.dst_port;
+                } else if (key.protocol == IPPROTO_ICMP) {
+                    fb_key.flow.sport = key.icmp.id;
+                    fb_key.flow.dport = key.icmp.sequence;
+                }
+                fb_key.latency_bucket = log2_latency;
+                flow_total_hist.increment(fb_key, 1);
             }
         }
 
@@ -693,18 +764,19 @@ int kprobe____ip_queue_xmit(struct pt_regs *ctx, struct sock *sk, struct sk_buff
     return 0;
 }
 
-// TX Stage 0: UDP ip_send_skb
+// TX Stage 0: UDP/ICMP ip_send_skb
 int kprobe__ip_send_skb(struct pt_regs *ctx, struct net *net, struct sk_buff *skb) {
     if (DIRECTION_FILTER == 2) return 0;  // rx only
-    if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_UDP) return 0;
+    if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_UDP && PROTOCOL_FILTER != IPPROTO_ICMP) return 0;
 
     handle_stage_event(ctx, skb, TX_STAGE_0, 1);
     return 0;
 }
 
+#if STAGE_LATENCY_MODE
 // TX Stage 1: internal_dev_xmit
 int kprobe__internal_dev_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
-    if (DIRECTION_FILTER == 2) return 0;  // rx only
+    if (DIRECTION_FILTER == 2) return 0;
     handle_stage_event(ctx, skb, TX_STAGE_1, 1);
     return 0;
 }
@@ -752,6 +824,7 @@ int kprobe__ovs_vport_send(struct pt_regs *ctx, const void *vport, struct sk_buf
     }
     return 0;
 }
+#endif
 
 // TX Stage 6: net_dev_xmit tracepoint
 RAW_TRACEPOINT_PROBE(net_dev_xmit) {
@@ -775,6 +848,7 @@ TRACEPOINT_PROBE(net, netif_receive_skb) {
     return 0;
 }
 
+#if STAGE_LATENCY_MODE
 // RX Stage 1: netdev_frame_hook
 int kprobe__netdev_frame_hook(struct pt_regs *ctx, struct sk_buff **pskb) {
     struct sk_buff *skb = NULL;
@@ -787,6 +861,7 @@ int kprobe__netdev_frame_hook(struct pt_regs *ctx, struct sk_buff **pskb) {
     }
     return 0;
 }
+#endif
 
 // RX Stage 6: tcp_v4_rcv
 int kprobe__tcp_v4_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
@@ -800,6 +875,14 @@ int kprobe__tcp_v4_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
 int kprobe____udp4_lib_rcv(struct pt_regs *ctx, struct sk_buff *skb, struct udp_table *udptable) {
     if (DIRECTION_FILTER == 1) return 0;  // tx only
     if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_UDP) return 0;
+    handle_stage_event(ctx, skb, RX_STAGE_6, 2);
+    return 0;
+}
+
+// RX Stage 6: icmp_rcv
+int kprobe__icmp_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
+    if (DIRECTION_FILTER == 1) return 0;  // tx only
+    if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_ICMP) return 0;
     handle_stage_event(ctx, skb, RX_STAGE_6, 2);
     return 0;
 }
@@ -861,104 +944,147 @@ def get_stage_name(stage_id):
         10: "RX_S3_ovs_dp_upcall",
         11: "RX_S4_ovs_flow_key_extract",
         12: "RX_S5_ovs_vport_send",
-        13: "RX_S6_tcp_v4_rcv/udp_rcv"
+        13: "RX_S6_tcp_v4_rcv/udp_rcv/icmp_rcv"
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
-def print_histogram_summary(b, interval_start_time):
-    """Print histogram summary for the current interval"""
-    current_time = datetime.datetime.now()
-    print("\n" + "=" * 80)
-    print("[%s] System Network Latency Report (Interval: %.1fs)" % (
-        current_time.strftime("%Y-%m-%d %H:%M:%S"),
-        time_time() - interval_start_time
-    ))
-    print("=" * 80)
+def format_protocol(proto):
+    """Convert protocol number to name"""
+    proto_names = {6: "TCP", 17: "UDP", 1: "ICMP"}
+    return proto_names.get(proto, "PROTO_%d" % proto)
 
-    # Get stage pair histogram data
-    latency_hist = b["adjacent_latency_hist"]
+def bucket_range_str(bucket):
+    """Convert log2 bucket to human-readable latency range string"""
+    if bucket == 0:
+        return "1us"
+    low = 1 << (bucket - 1)
+    high = (1 << bucket) - 1
+    if low >= 1000000:
+        return "%gs-%gs" % (low / 1000000.0, high / 1000000.0)
+    elif low >= 1000:
+        return "%g-%gms" % (low / 1000.0, high / 1000.0)
+    return "%d-%dus" % (low, high)
 
-    # Collect all stage pair data organized by (prev_stage, curr_stage, direction)
-    stage_pair_data = {}
+def bucket_midpoint_us(bucket):
+    """Approximate midpoint of a log2 bucket in microseconds"""
+    if bucket == 0:
+        return 0.5
+    return 1.5 * (1 << (bucket - 1))
 
-    try:
-        for k, v in latency_hist.items():
-            pair_key = (k.prev_stage, k.curr_stage, k.direction)
-            bucket = k.latency_bucket
-            count = v.value if hasattr(v, 'value') else int(v)
+def compute_flow_stats(bucket_counts):
+    """Compute statistics from a dict of {bucket: count}."""
+    total = sum(bucket_counts.values())
+    if total == 0:
+        return None
 
-            if pair_key not in stage_pair_data:
-                stage_pair_data[pair_key] = {}
-            stage_pair_data[pair_key][bucket] = count
-    except Exception as e:
-        print("Error reading histogram data:", str(e))
-        return
+    sorted_buckets = sorted(bucket_counts.items())
+    min_bucket = sorted_buckets[0][0]
+    max_bucket = sorted_buckets[-1][0]
 
-    if not stage_pair_data:
-        print("No adjacent stage data collected in this interval")
-        return
+    weighted_sum = sum(bucket_midpoint_us(b) * c for b, c in sorted_buckets)
+    avg = weighted_sum / total
 
-    print("Found %d unique stage pairs" % len(stage_pair_data))
+    percentiles = {"p50": 0.50, "p90": 0.90, "p99": 0.99}
+    result = {"count": total, "avg": avg, "min_bucket": min_bucket, "max_bucket": max_bucket}
 
-    # Sort stage pairs by direction, then by stages
-    sorted_pairs = sorted(stage_pair_data.keys(), key=lambda x: (x[2], x[0], x[1]))
+    cumulative = 0
+    pct_keys = sorted(percentiles.keys(), key=lambda k: percentiles[k])
+    pct_idx = 0
+    for bucket, count in sorted_buckets:
+        cumulative += count
+        while pct_idx < len(pct_keys) and cumulative >= percentiles[pct_keys[pct_idx]] * total:
+            result[pct_keys[pct_idx]] = bucket
+            pct_idx += 1
+    while pct_idx < len(pct_keys):
+        result[pct_keys[pct_idx]] = max_bucket
+        pct_idx += 1
 
-    # Print by direction
-    for direction in [1, 2]:
-        dir_pairs = [p for p in sorted_pairs if p[2] == direction]
-        if not dir_pairs:
+    return result
+
+def print_per_flow_stats(b, sort_by, top_n):
+    """Read flow_total_hist and print per-flow latency statistics"""
+    flow_hist = b["flow_total_hist"]
+
+    flow_data = {}
+    for k, v in flow_hist.items():
+        fk = k.flow
+        flow_tuple = (fk.sip, fk.dip, fk.sport, fk.dport, fk.protocol)
+        bucket = k.latency_bucket
+        count = v.value if hasattr(v, 'value') else int(v)
+        if count <= 0:
             continue
+        if flow_tuple not in flow_data:
+            flow_data[flow_tuple] = {}
+        flow_data[flow_tuple][bucket] = count
 
-        direction_str = "TX Direction (System -> Physical)" if direction == 1 else "RX Direction (Physical -> System)"
-        print("\n%s:" % direction_str)
-        print("-" * 60)
+    if not flow_data:
+        print("\n  No per-flow total latency data collected in this interval")
+        return
 
-        for prev_stage, curr_stage, dir_val in dir_pairs:
-            prev_name = get_stage_name(prev_stage)
-            curr_name = get_stage_name(curr_stage)
+    flow_stats = []
+    for flow_tuple, buckets in flow_data.items():
+        stats = compute_flow_stats(buckets)
+        if stats:
+            flow_stats.append((flow_tuple, stats, buckets))
 
-            print("\n  %s -> %s:" % (prev_name, curr_name))
+    sort_key_map = {
+        "count": lambda x: x[1]["count"],
+        "avg":   lambda x: x[1]["avg"],
+        "p90":   lambda x: x[1].get("p90", 0),
+        "p99":   lambda x: x[1].get("p99", 0),
+    }
+    key_fn = sort_key_map.get(sort_by, sort_key_map["count"])
+    flow_stats.sort(key=key_fn, reverse=True)
 
-            # Get histogram data for this stage pair
-            buckets = stage_pair_data[(prev_stage, curr_stage, dir_val)]
-            total_samples = sum(buckets.values())
+    shown = min(top_n, len(flow_stats))
+    print("\nPer-Flow Total Latency Statistics (approx values from log2 histogram):")
+    print("  Flows: %d, Sorted by: %s (desc), Showing top %d" % (len(flow_stats), sort_by, shown))
 
-            if total_samples == 0:
-                print("    No samples")
-                continue
+    for idx, (flow_tuple, stats, buckets) in enumerate(flow_stats[:shown]):
+        sip, dip, sport, dport, proto = flow_tuple
+        sip_str = format_ip(sip)
+        dip_str = format_ip(dip)
+        proto_str = format_protocol(proto)
 
-            print("    Total samples: %d" % total_samples)
-            print("    Latency distribution:")
+        sport_h = socket.ntohs(sport)
+        dport_h = socket.ntohs(dport)
 
-            # Sort buckets and display
-            sorted_buckets = sorted(buckets.items())
-            max_count = max(buckets.values())
+        if proto == 1:  # ICMP: sport=id, dport=seq
+            flow_label = "%s -> %s (%s id=%d seq=%d)" % (
+                sip_str, dip_str, proto_str, sport_h, dport_h)
+        else:
+            flow_label = "%s:%d -> %s:%d (%s)" % (
+                sip_str, sport_h, dip_str, dport_h, proto_str)
 
-            for bucket, count in sorted_buckets:
-                if count > 0:
-                    # Convert bucket to latency range
-                    if bucket == 0:
-                        range_str = "0-1us"
-                    else:
-                        low = 1 << (bucket - 1)
-                        high = (1 << bucket) - 1
-                        range_str = "%d-%dus" % (low, high)
+        avg_str = "%dus" % int(stats["avg"]) if stats["avg"] < 1000 else "%.1fms" % (stats["avg"] / 1000)
+        p50_str = bucket_range_str(stats["p50"])
+        p90_str = bucket_range_str(stats["p90"])
+        p99_str = bucket_range_str(stats["p99"])
+        min_str = bucket_range_str(stats["min_bucket"])
+        max_str = bucket_range_str(stats["max_bucket"])
 
-                    # Create simple bar graph
-                    bar_width = int(40 * count / max_count)
-                    bar = "*" * bar_width
+        print("\n  #%d  %s" % (idx + 1, flow_label))
+        print("      Count: %-6d Avg~: %-8s P50~: %-12s P90~: %-12s P99~: %-12s Min: %-12s Max: %s" % (
+            stats["count"], avg_str, p50_str, p90_str, p99_str, min_str, max_str))
 
-                    print("      %-12s: %6d |%-40s|" % (range_str, count, bar))
+        sorted_buckets = sorted(buckets.items())
+        max_count = max(buckets.values())
+        print("      Latency distribution:")
+        for bucket, count in sorted_buckets:
+            if count > 0:
+                range_str = bucket_range_str(bucket)
+                bar_width = int(40 * count / max_count)
+                bar = "*" * bar_width
+                print("        %-12s: %6d |%-40s|" % (range_str, count, bar))
 
-    # Print packet counters
+def _print_counters_and_total(b, sort_by, top_n):
+    """Print packet counters, total latency histogram, and per-flow stats"""
     counters = b["packet_counters"]
     print("\nPacket Counters:")
     print("  TX packets: %d" % counters[1].value)
     print("  RX packets: %d" % counters[2].value)
 
-    # Calculate incomplete flows
     flow_counters = b["flow_stage_counters"]
-
     first_stage_tx = flow_counters[0].value
     last_stage_tx = flow_counters[1].value
     first_stage_rx = flow_counters[2].value
@@ -977,7 +1103,6 @@ def print_histogram_summary(b, interval_start_time):
             first_stage_rx, last_stage_rx, incomplete_rx_count,
             100.0 * incomplete_rx_count / first_stage_rx if first_stage_rx > 0 else 0))
 
-    # Check active flows
     total_active_flows = 0
     try:
         flow_sessions = b["flow_sessions"]
@@ -1007,30 +1132,123 @@ def print_histogram_summary(b, interval_start_time):
 
             for bucket in sorted(total_latency_data.keys()):
                 count = total_latency_data[bucket]
-
-                if bucket == 0:
-                    range_str = "1us"
-                else:
-                    low = 1 << (bucket - 1)
-                    high = (1 << bucket) - 1
-                    range_str = "%d-%dus" % (low, high)
-
+                range_str = bucket_range_str(bucket)
                 bar_width = int(40 * count / max_count)
                 bar = "*" * bar_width
-
                 print("  %-12s: %6d |%-40s|" % (range_str, count, bar))
         else:
             print("  No total latency data collected in this interval")
     except Exception as e:
         print("  Error reading total latency histogram: %s" % str(e))
 
-    # Clear histograms for next interval
-    latency_hist.clear()
+    # Per-flow total latency statistics
     try:
-        total_hist = b["total_latency_hist"]
-        total_hist.clear()
+        print_per_flow_stats(b, sort_by, top_n)
+    except Exception as e:
+        print("  Error reading per-flow latency data: %s" % str(e))
+
+    # Clear histograms for next interval
+    try:
+        b["total_latency_hist"].clear()
     except:
         pass
+    try:
+        b["flow_total_hist"].clear()
+    except:
+        pass
+
+def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10, stage_latency=False):
+    """Print histogram summary for the current interval"""
+    current_time = datetime.datetime.now()
+    print("\n" + "=" * 80)
+    if stage_latency:
+        print("[%s] Stage + Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
+    else:
+        print("[%s] Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
+    print("=" * 80)
+
+    if not stage_latency:
+        _print_counters_and_total(b, sort_by, top_n)
+        return
+
+    # Get stage pair histogram data
+    latency_hist = b["adjacent_latency_hist"]
+
+    stage_pair_data = {}
+
+    try:
+        for k, v in latency_hist.items():
+            pair_key = (k.prev_stage, k.curr_stage, k.direction)
+            bucket = k.latency_bucket
+            count = v.value if hasattr(v, 'value') else int(v)
+
+            if pair_key not in stage_pair_data:
+                stage_pair_data[pair_key] = {}
+            stage_pair_data[pair_key][bucket] = count
+    except Exception as e:
+        print("Error reading histogram data:", str(e))
+        return
+
+    if not stage_pair_data:
+        print("No adjacent stage data collected in this interval")
+        return
+
+    print("Found %d unique stage pairs" % len(stage_pair_data))
+
+    sorted_pairs = sorted(stage_pair_data.keys(), key=lambda x: (x[2], x[0], x[1]))
+
+    for direction in [1, 2]:
+        dir_pairs = [p for p in sorted_pairs if p[2] == direction]
+        if not dir_pairs:
+            continue
+
+        direction_str = "TX Direction (System -> Physical)" if direction == 1 else "RX Direction (Physical -> System)"
+        print("\n%s:" % direction_str)
+        print("-" * 60)
+
+        for prev_stage, curr_stage, dir_val in dir_pairs:
+            prev_name = get_stage_name(prev_stage)
+            curr_name = get_stage_name(curr_stage)
+
+            print("\n  %s -> %s:" % (prev_name, curr_name))
+
+            buckets = stage_pair_data[(prev_stage, curr_stage, dir_val)]
+            total_samples = sum(buckets.values())
+
+            if total_samples == 0:
+                print("    No samples")
+                continue
+
+            print("    Total samples: %d" % total_samples)
+            print("    Latency distribution:")
+
+            sorted_buckets = sorted(buckets.items())
+            max_count = max(buckets.values())
+
+            for bucket, count in sorted_buckets:
+                if count > 0:
+                    if bucket == 0:
+                        range_str = "0-1us"
+                    else:
+                        low = 1 << (bucket - 1)
+                        high = (1 << bucket) - 1
+                        range_str = "%d-%dus" % (low, high)
+
+                    bar_width = int(40 * count / max_count)
+                    bar = "*" * bar_width
+
+                    print("      %-12s: %6d |%-40s|" % (range_str, count, bar))
+
+    _print_counters_and_total(b, sort_by, top_n)
+
+    # Clear stage latency histogram for next interval
+    latency_hist.clear()
 
 def main():
     global direction_filter
@@ -1040,18 +1258,18 @@ def main():
         sys.exit(1)
 
     parser = argparse.ArgumentParser(
-        description="System Network Adjacent Stage Latency Histogram Tool",
+        description="System Network Latency Summary Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  Monitor TCP TX traffic (packets leaving system):
+  Monitor TCP TX traffic (total latency only, default):
     sudo %(prog)s --phy-interface enp94s0f0np0 --direction tx --protocol tcp --src-ip 70.0.0.33
 
-  Monitor UDP RX traffic (packets entering system):
-    sudo %(prog)s --phy-interface enp94s0f0np0 --direction rx --protocol udp --dst-ip 70.0.0.33
+  Monitor with per-stage latency breakdown:
+    sudo %(prog)s --phy-interface enp94s0f0np0 --direction tx --protocol tcp --src-ip 70.0.0.33 --stage-latency
 
-  Monitor all TCP/UDP traffic with 10 second intervals:
-    sudo %(prog)s --phy-interface enp94s0f0np0 --direction tx --protocol all --interval 10
+  Monitor all traffic with custom sort and top-N:
+    sudo %(prog)s --phy-interface enp94s0f0np0 --direction tx --protocol all --interval 10 --sort-by p90 --top 20
 """
     )
 
@@ -1065,12 +1283,18 @@ Examples:
                         help='Source port filter (TCP/UDP)')
     parser.add_argument('--dst-port', type=int, required=False,
                         help='Destination port filter (TCP/UDP)')
-    parser.add_argument('--protocol', type=str, choices=['tcp', 'udp', 'all'],
+    parser.add_argument('--protocol', type=str, choices=['tcp', 'udp', 'icmp', 'all'],
                         default='all', help='Protocol filter (default: all)')
     parser.add_argument('--direction', type=str, choices=['tx', 'rx'],
                         required=True, help='Direction filter: tx=System TX, rx=System RX')
     parser.add_argument('--interval', type=int, default=5,
                         help='Statistics output interval in seconds (default: 5)')
+    parser.add_argument('--stage-latency', action='store_true',
+                        help='Enable per-stage adjacent latency measurement (adds intermediate probes, higher overhead)')
+    parser.add_argument('--top', type=int, default=10,
+                        help='Number of top flows to display (default: 10)')
+    parser.add_argument('--sort-by', type=str, choices=['count', 'avg', 'p90', 'p99'],
+                        default='count', help='Sort per-flow stats by this metric (default: count)')
 
     args = parser.parse_args()
 
@@ -1080,12 +1304,14 @@ Examples:
     src_port = args.src_port if args.src_port else 0
     dst_port = args.dst_port if args.dst_port else 0
 
-    protocol_map = {'tcp': 6, 'udp': 17, 'all': 0}
+    protocol_map = {'tcp': 6, 'udp': 17, 'icmp': 1, 'all': 0}
     protocol_filter = protocol_map[args.protocol]
 
     # Direction: 1=tx, 2=rx
     direction_map = {'tx': 1, 'rx': 2}
     direction_filter = direction_map[args.direction]
+
+    stage_latency_mode = 1 if args.stage_latency else 0
 
     # Support multiple interfaces
     phy_interfaces = args.phy_interface.split(',')
@@ -1096,7 +1322,7 @@ Examples:
         print("Error getting interface index: %s" % e)
         sys.exit(1)
 
-    print("=== System Network Adjacent Stage Latency Histogram Tool ===")
+    print("=== System Network Latency Summary Tool ===")
     print("Protocol filter: %s" % args.protocol.upper())
     print("Direction filter: %s (tx=System->Physical, rx=Physical->System)" % args.direction.upper())
     if args.src_ip:
@@ -1109,25 +1335,32 @@ Examples:
         print("Destination port filter: %d" % dst_port)
     print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, ifindex1, ifindex2))
     print("Statistics interval: %d seconds" % args.interval)
-    print("Mode: Adjacent stage latency tracking only")
+    if args.stage_latency:
+        print("Mode: Stage + Flow latency (per-stage probes enabled)")
+    else:
+        print("Mode: Flow latency only (minimal probes)")
+    print("Sort by: %s, Top: %d" % (args.sort_by, args.top))
 
     try:
         b = BPF(text=bpf_text % (
             src_ip_hex, dst_ip_hex, src_port, dst_port,
-            protocol_filter, ifindex1, ifindex2, direction_filter
+            protocol_filter, ifindex1, ifindex2, direction_filter,
+            stage_latency_mode
         ))
         print("BPF program loaded successfully")
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
 
-    print("\nCollecting adjacent stage latency data... Hit Ctrl-C to end.")
+    print("\nCollecting latency data... Hit Ctrl-C to end.")
     print("Statistics will be displayed every %d seconds\n" % args.interval)
 
     # Setup signal handler for clean exit
     def signal_handler(sig, frame):
         print("\n\nFinal statistics:")
-        print_histogram_summary(b, interval_start_time)
+        print_histogram_summary(b, interval_start_time,
+                                sort_by=args.sort_by, top_n=args.top,
+                                stage_latency=args.stage_latency)
         print("\nExiting...")
         sys.exit(0)
 
@@ -1139,7 +1372,9 @@ Examples:
     try:
         while True:
             sleep(args.interval)
-            print_histogram_summary(b, interval_start_time)
+            print_histogram_summary(b, interval_start_time,
+                                    sort_by=args.sort_by, top_n=args.top,
+                                    stage_latency=args.stage_latency)
             interval_start_time = time_time()
     except KeyboardInterrupt:
         pass
