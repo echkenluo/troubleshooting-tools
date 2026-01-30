@@ -939,14 +939,14 @@ def print_per_flow_stats(b, sort_by, top_n):
     for flow_tuple, buckets in flow_data.items():
         stats = compute_flow_stats(buckets)
         if stats:
-            flow_stats.append((flow_tuple, stats))
+            flow_stats.append((flow_tuple, stats, buckets))
 
     # Sort
     sort_key_map = {
         "count": lambda x: x[1]["count"],
         "avg":   lambda x: x[1]["avg"],
-        "p90":   lambda x: x[1]["p90"],
-        "p99":   lambda x: x[1]["p99"],
+        "p90":   lambda x: x[1].get("p90", 0),
+        "p99":   lambda x: x[1].get("p99", 0),
     }
     key_fn = sort_key_map.get(sort_by, sort_key_map["count"])
     flow_stats.sort(key=key_fn, reverse=True)
@@ -955,7 +955,7 @@ def print_per_flow_stats(b, sort_by, top_n):
     print("\nPer-Flow Total Latency Statistics (approx values from log2 histogram):")
     print("  Flows: %d, Sorted by: %s (desc), Showing top %d" % (len(flow_stats), sort_by, shown))
 
-    for idx, (flow_tuple, stats) in enumerate(flow_stats[:shown]):
+    for idx, (flow_tuple, stats, buckets) in enumerate(flow_stats[:shown]):
         sip, dip, sport, dport, proto = flow_tuple
         sip_str = format_ip(sip)
         dip_str = format_ip(dip)
@@ -982,6 +982,17 @@ def print_per_flow_stats(b, sort_by, top_n):
         print("\n  #%d  %s" % (idx + 1, flow_label))
         print("      Count: %-6d Avg~: %-8s P50~: %-12s P90~: %-12s P99~: %-12s Min: %-12s Max: %s" % (
             stats["count"], avg_str, p50_str, p90_str, p99_str, min_str, max_str))
+
+        # Print histogram for this flow
+        sorted_buckets = sorted(buckets.items())
+        max_count = max(buckets.values())
+        print("      Latency distribution:")
+        for bucket, count in sorted_buckets:
+            if count > 0:
+                range_str = bucket_range_str(bucket)
+                bar_width = int(40 * count / max_count)
+                bar = "*" * bar_width
+                print("        %-12s: %6d |%-40s|" % (range_str, count, bar))
 
 # Helper Functions
 def get_if_index(devname):

@@ -56,7 +56,7 @@ environments:
       client_ip: 192.168.77.83
       server_physical_interface: enp24s0f0np0
       server_physical_nic_members: []
-      server_vm_interface: vnet126
+      server_vm_interface: vnet130
       client_physical_interface: enp24s0f0np0
       client_physical_nic_members: []
       client_vm_interface: vnet35
