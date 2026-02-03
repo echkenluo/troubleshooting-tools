@@ -16,3 +16,8 @@ packaging/rpm/output
 *.DS_Store
 .task
 docs/planning-with-files
+docs/plans
+
+# Ignore subdirectory CLAUDE.md, keep root only
+**/CLAUDE.md
+!/CLAUDE.md
