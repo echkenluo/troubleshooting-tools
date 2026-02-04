@@ -114,32 +114,29 @@ bpf_text = """
 #define STAGE_LATENCY_MODE %d  // 0=total-only, 1=per-stage breakdown
 
 // Stage definitions - vnet perspective
+// Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency measurement
 // VNET RX path (VM TX, packets from VM to external)
 #define STG_VNET_RX         1
 #define STG_OVS_RX          2
 #define STG_FLOW_EXTRACT_END_RX  3
-#define STG_OVS_UPCALL_RX   4
-#define STG_OVS_USERSPACE_RX 5
-#define STG_CT_RX           6
-#define STG_CT_OUT_RX       7
-#define STG_QDISC_ENQ       8
-#define STG_QDISC_DEQ       9
-#define STG_TX_QUEUE        10  // dev_hard_start_xmit (physical dev)
-#define STG_TX_XMIT         11  // net:net_dev_xmit (physical dev) - LAST POINT
+#define STG_CT_RX           4
+#define STG_CT_OUT_RX       5
+#define STG_QDISC_ENQ       6
+#define STG_QDISC_DEQ       7
+#define STG_TX_QUEUE        8   // dev_hard_start_xmit (physical dev)
+#define STG_TX_XMIT         9   // net:net_dev_xmit (physical dev) - LAST POINT
 
 // VNET TX path (VM RX, packets from external to VM)
-#define STG_PHY_RX          12
-#define STG_OVS_TX          13
-#define STG_FLOW_EXTRACT_END_TX  14
-#define STG_OVS_UPCALL_TX   15
-#define STG_OVS_USERSPACE_TX 16
-#define STG_CT_TX           17
-#define STG_CT_OUT_TX       18
-#define STG_VNET_QDISC_ENQ  19
-#define STG_VNET_QDISC_DEQ  20
-#define STG_VNET_TX         21  // dev_hard_start_xmit (vnet) - LAST POINT
+#define STG_PHY_RX          10
+#define STG_OVS_TX          11
+#define STG_FLOW_EXTRACT_END_TX  12
+#define STG_CT_TX           13
+#define STG_CT_OUT_TX       14
+#define STG_VNET_QDISC_ENQ  15
+#define STG_VNET_QDISC_DEQ  16
+#define STG_VNET_TX         17  // dev_hard_start_xmit (vnet) - LAST POINT
 
-#define MAX_STAGES          22
+#define MAX_STAGES          18
 #define IFNAMSIZ            16
 
 // Packet key structure for unique packet identification
@@ -260,52 +257,62 @@ static __always_inline bool is_target_phy_interface(const struct sk_buff *skb) {
     return (ifindex == PHY_IFINDEX1 || ifindex == PHY_IFINDEX2);
 }
 
-// Packet parsing functions
+// Packet parsing functions - simplified to match vm_network_performance_metrics.py
+// Note: No IP version validation here - trust network_header offset for consistent
+// flow tracking across stages. Protocol filter handles non-matching packets.
 static __always_inline int get_ip_header(struct sk_buff *skb, struct iphdr *ip) {
     unsigned char *head;
     u16 network_header_offset;
-    
+
     if (bpf_probe_read_kernel(&head, sizeof(head), &skb->head) < 0 ||
         bpf_probe_read_kernel(&network_header_offset, sizeof(network_header_offset), &skb->network_header) < 0) {
         return -1;
     }
-    
+
     if (network_header_offset == (u16)~0U || network_header_offset > 2048) {
         return -1;
     }
-    
+
     if (bpf_probe_read_kernel(ip, sizeof(*ip), head + network_header_offset) < 0) {
         return -1;
     }
-    
+
     return 0;
 }
 
+// Simplified transport header parsing - matches vm_network_performance_metrics.py
 static __always_inline int get_transport_header(struct sk_buff *skb, void *hdr, u16 hdr_size) {
     unsigned char *head;
     u16 transport_header_offset;
     u16 network_header_offset;
-    
+
     if (bpf_probe_read_kernel(&head, sizeof(head), &skb->head) < 0 ||
         bpf_probe_read_kernel(&transport_header_offset, sizeof(transport_header_offset), &skb->transport_header) < 0 ||
         bpf_probe_read_kernel(&network_header_offset, sizeof(network_header_offset), &skb->network_header) < 0) {
         return -1;
     }
-    
-    if (transport_header_offset == 0 || transport_header_offset == (u16)~0U || transport_header_offset == network_header_offset) {
-        struct iphdr ip;
-        if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network_header_offset) < 0) {
-            return -1;
+
+    // If transport_header is valid and different from network_header, use it
+    if (transport_header_offset != 0 && transport_header_offset != (u16)~0U &&
+        transport_header_offset != network_header_offset) {
+        if (bpf_probe_read_kernel(hdr, hdr_size, head + transport_header_offset) == 0) {
+            return 0;
         }
-        u8 ip_ihl = ip.ihl & 0x0F;
-        if (ip_ihl < 5) return -1;
-        transport_header_offset = network_header_offset + (ip_ihl * 4);
     }
-    
+
+    // Calculate transport header offset from IP header
+    struct iphdr ip;
+    if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network_header_offset) < 0) {
+        return -1;
+    }
+    u8 ip_ihl = ip.ihl & 0x0F;
+    if (ip_ihl < 5) return -1;
+    transport_header_offset = network_header_offset + (ip_ihl * 4);
+
     if (bpf_probe_read_kernel(hdr, hdr_size, head + transport_header_offset) < 0) {
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -351,11 +358,11 @@ static __always_inline int parse_packet_key(
         case IPPROTO_TCP: {
             struct tcphdr tcp;
             if (get_transport_header(skb, &tcp, sizeof(tcp)) != 0) return 0;
-            
+
             key->tcp.source = tcp.source;
             key->tcp.dest = tcp.dest;
             key->tcp.seq = tcp.seq;
-            
+
             if (SRC_PORT_FILTER != 0 && key->tcp.source != htons(SRC_PORT_FILTER) && key->tcp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -366,14 +373,14 @@ static __always_inline int parse_packet_key(
         }
         case IPPROTO_UDP: {
             key->udp.id = ip.id;
-            
+
             struct udphdr udp;
             if (get_transport_header(skb, &udp, sizeof(udp)) == 0) {
                 key->udp.source = udp.source;
                 key->udp.dest = udp.dest;
                 key->udp.len = udp.len;
             }
-            
+
             if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -385,149 +392,11 @@ static __always_inline int parse_packet_key(
         case IPPROTO_ICMP: {
             struct icmphdr icmp;
             if (get_transport_header(skb, &icmp, sizeof(icmp)) != 0) return 0;
-            
+
             key->icmp.type = icmp.type;
             key->icmp.code = icmp.code;
             key->icmp.id = icmp.un.echo.id;
             key->icmp.sequence = icmp.un.echo.sequence;
-            break;
-        }
-        default:
-            return 0;
-    }
-    
-    return 1;
-}
-
-// Specialized parsing function for userspace SKB
-static __always_inline int parse_packet_key_userspace(
-    struct sk_buff *skb, 
-    struct packet_key_t *key, 
-    u8 direction
-) {
-    if (skb == NULL) {
-        return 0;
-    }
-
-    unsigned char *skb_head;
-    if(bpf_probe_read_kernel(&skb_head, sizeof(skb_head), &skb->head) < 0) {
-        return 0;
-    }
-    if (!skb_head) {
-        return 0;
-    }
-    
-    unsigned long skb_data_ptr_val; 
-    if(bpf_probe_read_kernel(&skb_data_ptr_val, sizeof(skb_data_ptr_val), &skb->data) < 0) {
-        return 0;
-    }
-    
-    unsigned int data_offset = (unsigned int)(skb_data_ptr_val - (unsigned long)skb_head);
-    unsigned int mac_offset = data_offset; 
-    
-    struct ethhdr eth;
-    if (bpf_probe_read_kernel(&eth, sizeof(eth), skb_head + mac_offset) < 0) {
-        return 0;
-    }
-    
-    unsigned int net_offset = mac_offset + ETH_HLEN;
-    __be16 h_proto = eth.h_proto;
-    
-    // Handle VLAN tags
-    if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-        net_offset += VLAN_HLEN; 
-        if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + ETH_HLEN + 2) < 0) { 
-            return 0;
-        }
-        if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-             net_offset += VLAN_HLEN;
-             if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + (2 * VLAN_HLEN) + 2) < 0) {
-                 return 0;
-             }
-        }
-    }
-    
-    if (h_proto != htons(ETH_P_IP)) {
-        return 0;
-    }
-    
-    struct iphdr ip;
-    if (bpf_probe_read_kernel(&ip, sizeof(ip), skb_head + net_offset) < 0) {
-        return 0;
-    }
-    
-    key->sip = ip.saddr;
-    key->dip = ip.daddr;
-    key->proto = ip.protocol;
-    
-    // Apply filters
-    if (PROTOCOL_FILTER != 0 && ip.protocol != PROTOCOL_FILTER) {
-        return 0;
-    }
-
-    // Apply IP filters - use exact matching for packet direction
-    if (SRC_IP_FILTER != 0 && ip.saddr != SRC_IP_FILTER) {
-        return 0;
-    }
-    if (DST_IP_FILTER != 0 && ip.daddr != DST_IP_FILTER) {
-        return 0;
-    }
-
-    u8 ip_ihl = ip.ihl & 0x0F;  
-    if (ip_ihl < 5) {  
-        return 0;
-    }
-
-    unsigned int trans_offset = net_offset + (ip_ihl * 4);
-    
-    // Parse transport layer
-    switch (ip.protocol) {
-        case IPPROTO_TCP: {
-            struct tcphdr tcp;
-            if (bpf_probe_read_kernel(&tcp, sizeof(tcp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            
-            key->tcp.source = tcp.source;
-            key->tcp.dest = tcp.dest;
-            key->tcp.seq = tcp.seq;
-            
-            if (SRC_PORT_FILTER != 0 && tcp.source != htons(SRC_PORT_FILTER) && tcp.dest != htons(SRC_PORT_FILTER)) {
-                return 0;
-            }
-            if (DST_PORT_FILTER != 0 && tcp.source != htons(DST_PORT_FILTER) && tcp.dest != htons(DST_PORT_FILTER)) {
-                return 0;
-            }
-            break;
-        }
-        case IPPROTO_UDP: {
-            key->udp.id = ip.id;
-            
-            struct udphdr udp;
-            if (bpf_probe_read_kernel(&udp, sizeof(udp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            key->udp.source = udp.source;
-            key->udp.dest = udp.dest;
-            
-            if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
-                return 0;
-            }
-            if (DST_PORT_FILTER != 0 && key->udp.source != htons(DST_PORT_FILTER) && key->udp.dest != htons(DST_PORT_FILTER)) {
-                return 0;
-            }
-            break;
-        }
-        case IPPROTO_ICMP: {
-            struct icmphdr icmp;
-            if (bpf_probe_read_kernel(&icmp, sizeof(icmp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            
-            key->icmp.id = icmp.un.echo.id;
-            key->icmp.sequence = icmp.un.echo.sequence;
-            key->icmp.type = icmp.type;
-            key->icmp.code = icmp.code;
             break;
         }
         default:
@@ -541,28 +410,21 @@ static __always_inline int parse_packet_key_userspace(
 static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u8 stage_id, u8 direction) {
     struct packet_key_t key = {};
     u64 current_ts = bpf_ktime_get_ns();
-    
+
     // Parse packet key
-    int parse_success = 0;
-    if (stage_id == STG_OVS_USERSPACE_RX || stage_id == STG_OVS_USERSPACE_TX) {
-        parse_success = parse_packet_key_userspace(skb, &key, direction);
-    } else {
-        parse_success = parse_packet_key(skb, &key, direction);
-    }
-    
-    if (!parse_success) {
+    if (!parse_packet_key(skb, &key, direction)) {
         return;
     }
-    
+
     // Check if this is the first stage for this direction
     bool is_first_stage = false;
     if ((direction == 1 && stage_id == STG_VNET_RX) ||
         (direction == 2 && stage_id == STG_PHY_RX)) {
         is_first_stage = true;
     }
-    
+
     struct flow_data_t *flow_ptr;
-    
+
     if (is_first_stage) {
         // Initialize new flow tracking
         struct flow_data_t zero = {};
@@ -570,15 +432,15 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         zero.last_stage = 0;
         zero.last_timestamp = 0;
         zero.first_timestamp = current_ts;  // Record first stage timestamp
-        
+
         flow_sessions.delete(&key);
         flow_ptr = flow_sessions.lookup_or_try_init(&key, &zero);
-        
+
         if (flow_ptr) {
             u32 idx = direction;
             u64 *counter = packet_counters.lookup(&idx);
             if (counter) (*counter)++;
-            
+
             // Count first stage
             u32 first_stage_idx = (direction == 1) ? 0 : 2;  // 0=first_stage_rx, 2=first_stage_tx
             u64 *first_counter = flow_stage_counters.lookup(&first_stage_idx);
@@ -587,7 +449,7 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
     } else {
         flow_ptr = flow_sessions.lookup(&key);
     }
-    
+
     if (!flow_ptr) {
         flow_sessions.delete(&key);
         return;
@@ -595,11 +457,12 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
     
 #if STAGE_LATENCY_MODE
     // Calculate and submit latency for adjacent stages
+    // Only record forward-progressing transitions to filter OVS conntrack re-injection
+    // OVS ct() action may be called multiple times (commit, NAT), causing repeated CT stages
     if (flow_ptr->last_stage > 0 && flow_ptr->last_timestamp > 0) {
-        u64 prev_ts = flow_ptr->last_timestamp;
-
-        if (current_ts > prev_ts) {
-            u64 latency_ns = current_ts - prev_ts;
+        // Only record and update for forward transitions
+        if (stage_id > flow_ptr->last_stage && current_ts > flow_ptr->last_timestamp) {
+            u64 latency_ns = current_ts - flow_ptr->last_timestamp;
             u64 latency_us = latency_ns / 1000;
 
             // Create stage pair key with latency bucket
@@ -611,12 +474,17 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
 
             // Update histogram
             adjacent_latency_hist.increment(pair_key, 1);
-        }
-    }
 
-    // Update tracking for next stage
-    flow_ptr->last_stage = stage_id;
-    flow_ptr->last_timestamp = current_ts;
+            // Only update tracking state for forward transitions
+            flow_ptr->last_stage = stage_id;
+            flow_ptr->last_timestamp = current_ts;
+        }
+        // Backward/equal transitions ignored (OVS conntrack re-injection)
+    } else {
+        // First stage after flow start - always update
+        flow_ptr->last_stage = stage_id;
+        flow_ptr->last_timestamp = current_ts;
+    }
 #endif
     
     // Check if this is the last stage
@@ -707,33 +575,6 @@ int kprobe__nf_conntrack_in(struct pt_regs *ctx, struct net *net, u_int8_t pf, u
     }
     if (DIRECTION_FILTER != 1) {
         handle_stage_event(ctx, skb, STG_CT_TX, 2);
-    }
-
-    return 0;
-}
-
-int kprobe__ovs_dp_upcall(struct pt_regs *ctx, void *dp, const struct sk_buff *skb_const) {
-    struct sk_buff *skb = (struct sk_buff *)skb_const;
-    if (!skb) return 0;
-
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, STG_OVS_UPCALL_RX, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, STG_OVS_UPCALL_TX, 2);
-    }
-
-    return 0;
-}
-
-int kprobe__ovs_flow_key_extract_userspace(struct pt_regs *ctx, struct net *net, const struct nlattr *attr, struct sk_buff *skb) {
-    if (!skb) return 0;
-
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, STG_OVS_USERSPACE_RX, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, STG_OVS_USERSPACE_TX, 2);
     }
 
     return 0;
@@ -1039,29 +880,26 @@ def get_stage_name(stage_id):
     """Get human-readable stage name"""
     stage_names = {
         # VNET RX path (VM TX, packets from VM to external)
+        # Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency
         1: "VNET_RX",
-        2: "OVS_RX", 
+        2: "OVS_RX",
         3: "FLOW_EXTRACT_END_RX",
-        4: "OVS_UPCALL_RX",
-        5: "OVS_USERSPACE_RX",
-        6: "CT_RX",
-        7: "CT_OUT_RX",
-        8: "QDISC_ENQ",
-        9: "QDISC_DEQ",
-        10: "TX_QUEUE",
-        11: "TX_XMIT",
-        
+        4: "CT_RX",
+        5: "CT_OUT_RX",
+        6: "QDISC_ENQ",
+        7: "QDISC_DEQ",
+        8: "TX_QUEUE",
+        9: "TX_XMIT",
+
         # VNET TX path (VM RX, packets from external to VM)
-        12: "PHY_RX",
-        13: "OVS_TX",
-        14: "FLOW_EXTRACT_END_TX",
-        15: "OVS_UPCALL_TX",
-        16: "OVS_USERSPACE_TX",
-        17: "CT_TX",
-        18: "CT_OUT_TX",
-        19: "VNET_QDISC_ENQ",
-        20: "VNET_QDISC_DEQ",
-        21: "VNET_TX"
+        10: "PHY_RX",
+        11: "OVS_TX",
+        12: "FLOW_EXTRACT_END_TX",
+        13: "CT_TX",
+        14: "CT_OUT_TX",
+        15: "VNET_QDISC_ENQ",
+        16: "VNET_QDISC_DEQ",
+        17: "VNET_TX"
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
