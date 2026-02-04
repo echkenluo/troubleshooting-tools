@@ -392,7 +392,19 @@ static __always_inline void record_stage(void *ctx, struct udp_flow_key *key,
         bpf_probe_read_kernel_str(flow->ifname, sizeof(flow->ifname), ifname);
 
     // Check if this is a terminal stage (flow complete)
-    u8 is_terminal = (stage == STAGE_FWD_STACK || stage == STAGE_REP_TX);
+    // RX (STAGE_FWD_STACK): stack delivery means all fragments reassembled
+    // TX (STAGE_REP_TX): for fragmented packets, wait for last fragment
+    u8 is_terminal = 0;
+    if (stage == STAGE_FWD_STACK) {
+        is_terminal = 1;
+    } else if (stage == STAGE_REP_TX) {
+        // For fragmented TX, only complete when last fragment sent
+        if (is_frag && !has_last) {
+            is_terminal = 0;  // More fragments coming
+        } else {
+            is_terminal = 1;  // Non-fragmented or last fragment
+        }
+    }
 
     if (is_terminal && stats) {
         __sync_fetch_and_add(&stats->complete_flows, 1);
