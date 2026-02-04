@@ -84,25 +84,22 @@ struct inet_cork;
 #define STAGE_LATENCY_MODE %d  // 0=total-only, 1=per-stage breakdown
 
 // Stage definitions - from system_network_latency_details.py
+// Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency measurement
 // TX direction stages (System -> Physical)
 #define TX_STAGE_0    0  // ip_queue_xmit (TCP) / ip_send_skb (UDP)
 #define TX_STAGE_1    1  // internal_dev_xmit
 #define TX_STAGE_2    2  // ovs_dp_process_packet
-#define TX_STAGE_3    3  // ovs_dp_upcall
-#define TX_STAGE_4    4  // ovs_flow_key_extract_userspace
-#define TX_STAGE_5    5  // ovs_vport_send
-#define TX_STAGE_6    6  // net_dev_xmit (physical)
+#define TX_STAGE_3    3  // ovs_vport_send
+#define TX_STAGE_4    4  // net_dev_xmit (physical)
 
 // RX direction stages (Physical -> System)
-#define RX_STAGE_0    7  // __netif_receive_skb (physical)
-#define RX_STAGE_1    8  // netdev_frame_hook
-#define RX_STAGE_2    9  // ovs_dp_process_packet
-#define RX_STAGE_3    10 // ovs_dp_upcall
-#define RX_STAGE_4    11 // ovs_flow_key_extract_userspace
-#define RX_STAGE_5    12 // ovs_vport_send
-#define RX_STAGE_6    13 // tcp_v4_rcv/udp_rcv/icmp_rcv (protocol specific)
+#define RX_STAGE_0    5  // __netif_receive_skb (physical)
+#define RX_STAGE_1    6  // netdev_frame_hook
+#define RX_STAGE_2    7  // ovs_dp_process_packet
+#define RX_STAGE_3    8  // ovs_vport_send
+#define RX_STAGE_4    9  // tcp_v4_rcv/udp_rcv/icmp_rcv (protocol specific)
 
-#define MAX_STAGES               14
+#define MAX_STAGES               10
 #define IFNAMSIZ                 16
 
 // Packet key structure - same as system_network_latency_details.py
@@ -296,169 +293,6 @@ static __always_inline int parse_udp_key(
     return 1;
 }
 
-// Specialized parsing function for userspace SKB
-static __always_inline int parse_packet_key_userspace(
-    struct sk_buff *skb,
-    struct packet_key_t *key,
-    u8 stage_id,
-    u8 direction
-) {
-    if (skb == NULL) {
-        return 0;
-    }
-
-    unsigned char *skb_head;
-    if(bpf_probe_read_kernel(&skb_head, sizeof(skb_head), &skb->head) < 0) {
-        return 0;
-    }
-    if (!skb_head) {
-        return 0;
-    }
-
-    unsigned long skb_data_ptr_val;
-    if(bpf_probe_read_kernel(&skb_data_ptr_val, sizeof(skb_data_ptr_val), &skb->data) < 0) {
-        return 0;
-    }
-
-    unsigned int data_offset = (unsigned int)(skb_data_ptr_val - (unsigned long)skb_head);
-    unsigned int mac_offset = data_offset;
-
-    struct ethhdr eth;
-    if (bpf_probe_read_kernel(&eth, sizeof(eth), skb_head + mac_offset) < 0) {
-        return 0;
-    }
-
-    unsigned int net_offset = mac_offset + ETH_HLEN;
-    __be16 h_proto = eth.h_proto;
-
-    // Handle VLAN tags
-    if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-        net_offset += VLAN_HLEN;
-        if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + ETH_HLEN + 2) < 0) {
-            return 0;
-        }
-        if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-             net_offset += VLAN_HLEN;
-             if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + (2 * VLAN_HLEN) + 2) < 0) {
-                 return 0;
-             }
-        }
-    }
-
-    if (h_proto != htons(ETH_P_IP)) {
-        return 0;
-    }
-
-    struct iphdr ip;
-    if (bpf_probe_read_kernel(&ip, sizeof(ip), skb_head + net_offset) < 0) {
-        return 0;
-    }
-
-    key->src_ip = ip.saddr;
-    key->dst_ip = ip.daddr;
-    key->protocol = ip.protocol;
-
-    // Apply filters
-    if (PROTOCOL_FILTER != 0 && ip.protocol != PROTOCOL_FILTER) {
-        return 0;
-    }
-
-    // Apply IP filters
-    if (SRC_IP_FILTER != 0 && ip.saddr != SRC_IP_FILTER) {
-        return 0;
-    }
-    if (DST_IP_FILTER != 0 && ip.daddr != DST_IP_FILTER) {
-        return 0;
-    }
-
-    u8 ip_ihl = ip.ihl & 0x0F;
-    if (ip_ihl < 5) {
-        return 0;
-    }
-
-    unsigned int trans_offset = net_offset + (ip_ihl * 4);
-
-    // Parse transport layer
-    switch (ip.protocol) {
-        case IPPROTO_TCP: {
-            struct tcphdr tcp;
-            if (bpf_probe_read_kernel(&tcp, sizeof(tcp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            key->tcp.src_port = tcp.source;
-            key->tcp.dst_port = tcp.dest;
-            key->tcp.seq = tcp.seq;
-
-            if (SRC_PORT_FILTER != 0 && key->tcp.src_port != htons(SRC_PORT_FILTER) && key->tcp.dst_port != htons(SRC_PORT_FILTER)) {
-                return 0;
-            }
-            if (DST_PORT_FILTER != 0 && key->tcp.src_port != htons(DST_PORT_FILTER) && key->tcp.dst_port != htons(DST_PORT_FILTER)) {
-                return 0;
-            }
-            break;
-        }
-        case IPPROTO_UDP: {
-            key->udp.ip_id = ip.id;
-
-            u16 frag_off_flags = ntohs(ip.frag_off);
-            u8 more_frag = (frag_off_flags & 0x2000) ? 1 : 0;
-            u16 frag_offset = frag_off_flags & 0x1FFF;
-            u8 is_fragment = (more_frag || frag_offset) ? 1 : 0;
-
-            if (is_fragment) {
-                key->udp.frag_off = frag_offset * 8;
-                if (frag_offset == 0) {
-                    struct udphdr udp;
-                    if (bpf_probe_read_kernel(&udp, sizeof(udp), skb_head + trans_offset) == 0) {
-                        key->udp.src_port = udp.source;
-                        key->udp.dst_port = udp.dest;
-                    } else {
-                        key->udp.src_port = 0;
-                        key->udp.dst_port = 0;
-                    }
-                } else {
-                    key->udp.src_port = 0;
-                    key->udp.dst_port = 0;
-                }
-            } else {
-                key->udp.frag_off = 0;
-                struct udphdr udp;
-                if (bpf_probe_read_kernel(&udp, sizeof(udp), skb_head + trans_offset) < 0) {
-                    return 0;
-                }
-                key->udp.src_port = udp.source;
-                key->udp.dst_port = udp.dest;
-            }
-
-            if (!is_fragment || frag_offset == 0) {
-                if (SRC_PORT_FILTER != 0 && key->udp.src_port != htons(SRC_PORT_FILTER) && key->udp.dst_port != htons(SRC_PORT_FILTER)) {
-                    return 0;
-                }
-                if (DST_PORT_FILTER != 0 && key->udp.src_port != htons(DST_PORT_FILTER) && key->udp.dst_port != htons(DST_PORT_FILTER)) {
-                    return 0;
-                }
-            }
-
-            break;
-        }
-        case IPPROTO_ICMP: {
-            struct icmphdr icmp;
-            if (bpf_probe_read_kernel(&icmp, sizeof(icmp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            key->icmp.id = icmp.un.echo.id;
-            key->icmp.sequence = icmp.un.echo.sequence;
-            key->icmp.type = icmp.type;
-            key->icmp.code = icmp.code;
-            break;
-        }
-        default:
-            return 0;
-    }
-
-    return 1;
-}
-
 static __always_inline int parse_packet_key(
     struct sk_buff *skb,
     struct packet_key_t *key,
@@ -599,14 +433,7 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
     u64 current_ts = bpf_ktime_get_ns();
 
     // Parse packet key
-    int parse_success = 0;
-    if (stage_id == TX_STAGE_4 || stage_id == RX_STAGE_4) {
-        parse_success = parse_packet_key_userspace(skb, &key, stage_id, direction);
-    } else {
-        parse_success = parse_packet_key(skb, &key, stage_id, direction);
-    }
-
-    if (!parse_success) {
+    if (!parse_packet_key(skb, &key, stage_id, direction)) {
         return;
     }
 
@@ -652,7 +479,10 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
 
 #if STAGE_LATENCY_MODE
     // Calculate and submit latency for adjacent stages
-    if (flow_ptr->last_timestamp > 0 && flow_ptr->last_timestamp < current_ts) {
+    // Skip self-transitions (OVS recirculation) and backwards transitions (packet key reuse)
+    // Only record forward progression: TX S0->S1->S2->S3->S4, RX S5->S6->S7->S8->S9
+    if (flow_ptr->last_timestamp > 0 && flow_ptr->last_timestamp < current_ts &&
+        stage_id > flow_ptr->last_stage) {
         u64 prev_ts = flow_ptr->last_timestamp;
         u64 latency_ns = current_ts - prev_ts;
         u64 latency_us = latency_ns / 1000;
@@ -664,17 +494,19 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         pair_key.latency_bucket = bpf_log2l(latency_us + 1);
 
         adjacent_latency_hist.increment(pair_key, 1);
+
+        // Only update last_stage when stage actually changes
+        flow_ptr->last_stage = stage_id;
     }
 
-    // Update tracking for next stage
-    flow_ptr->last_stage = stage_id;
+    // Always update timestamp for accurate latency measurement
     flow_ptr->last_timestamp = current_ts;
 #endif
 
     // Check if this is the last stage
     bool is_last_stage = false;
-    if ((direction == 1 && stage_id == TX_STAGE_6) ||
-        (direction == 2 && stage_id == RX_STAGE_6)) {
+    if ((direction == 1 && stage_id == TX_STAGE_4) ||
+        (direction == 2 && stage_id == RX_STAGE_4)) {
         is_last_stage = true;
 
         // Calculate total latency from first to last stage
@@ -793,8 +625,7 @@ int kprobe__ovs_dp_process_packet(struct pt_regs *ctx, const struct sk_buff *skb
     return 0;
 }
 
-int kprobe__ovs_dp_upcall(struct pt_regs *ctx, void *dp, const struct sk_buff *skb_const) {
-    struct sk_buff *skb = (struct sk_buff *)skb_const;
+int kprobe__ovs_vport_send(struct pt_regs *ctx, const void *vport, struct sk_buff *skb) {
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, TX_STAGE_3, 1);
     }
@@ -803,36 +634,15 @@ int kprobe__ovs_dp_upcall(struct pt_regs *ctx, void *dp, const struct sk_buff *s
     }
     return 0;
 }
-
-int kprobe__ovs_flow_key_extract_userspace(struct pt_regs *ctx, struct net *net, const struct nlattr *attr, struct sk_buff *skb) {
-    if (!skb) return 0;
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, TX_STAGE_4, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, RX_STAGE_4, 2);
-    }
-    return 0;
-}
-
-int kprobe__ovs_vport_send(struct pt_regs *ctx, const void *vport, struct sk_buff *skb) {
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, TX_STAGE_5, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, RX_STAGE_5, 2);
-    }
-    return 0;
-}
 #endif
 
-// TX Stage 6: net_dev_xmit tracepoint
+// TX Stage 4: net_dev_xmit tracepoint
 RAW_TRACEPOINT_PROBE(net_dev_xmit) {
     struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
     if (!is_target_ifindex(skb)) return 0;
     if (DIRECTION_FILTER == 2) return 0;  // rx only
-    handle_stage_event(ctx, skb, TX_STAGE_6, 1);
+    handle_stage_event(ctx, skb, TX_STAGE_4, 1);
     return 0;
 }
 
@@ -863,34 +673,34 @@ int kprobe__netdev_frame_hook(struct pt_regs *ctx, struct sk_buff **pskb) {
 }
 #endif
 
-// RX Stage 6: tcp_v4_rcv
+// RX Stage 4: tcp_v4_rcv
 int kprobe__tcp_v4_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
     if (DIRECTION_FILTER == 1) return 0;  // tx only
     if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_TCP) return 0;
-    handle_stage_event(ctx, skb, RX_STAGE_6, 2);
+    handle_stage_event(ctx, skb, RX_STAGE_4, 2);
     return 0;
 }
 
-// RX Stage 6: __udp4_lib_rcv
+// RX Stage 4: __udp4_lib_rcv
 int kprobe____udp4_lib_rcv(struct pt_regs *ctx, struct sk_buff *skb, struct udp_table *udptable) {
     if (DIRECTION_FILTER == 1) return 0;  // tx only
     if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_UDP) return 0;
-    handle_stage_event(ctx, skb, RX_STAGE_6, 2);
+    handle_stage_event(ctx, skb, RX_STAGE_4, 2);
     return 0;
 }
 
-// RX Stage 6: icmp_rcv
+// RX Stage 4: icmp_rcv
 int kprobe__icmp_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
     if (DIRECTION_FILTER == 1) return 0;  // tx only
     if (PROTOCOL_FILTER != 0 && PROTOCOL_FILTER != IPPROTO_ICMP) return 0;
-    handle_stage_event(ctx, skb, RX_STAGE_6, 2);
+    handle_stage_event(ctx, skb, RX_STAGE_4, 2);
     return 0;
 }
 
 """
 
 # Constants
-MAX_STAGES = 14
+MAX_STAGES = 10
 
 # Helper Functions
 def get_if_index(devname):
@@ -927,24 +737,21 @@ def format_ip(addr):
 
 def get_stage_name(stage_id):
     """Get human-readable stage name"""
+    # Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency
     stage_names = {
         # TX path
         0: "TX_S0_ip_layer_entry",
         1: "TX_S1_internal_dev_xmit",
         2: "TX_S2_ovs_dp_process",
-        3: "TX_S3_ovs_dp_upcall",
-        4: "TX_S4_ovs_flow_key_extract",
-        5: "TX_S5_ovs_vport_send",
-        6: "TX_S6_net_dev_xmit",
+        3: "TX_S3_ovs_vport_send",
+        4: "TX_S4_net_dev_xmit",
 
         # RX path
-        7: "RX_S0_netif_receive_skb",
-        8: "RX_S1_netdev_frame_hook",
-        9: "RX_S2_ovs_dp_process",
-        10: "RX_S3_ovs_dp_upcall",
-        11: "RX_S4_ovs_flow_key_extract",
-        12: "RX_S5_ovs_vport_send",
-        13: "RX_S6_tcp_v4_rcv/udp_rcv/icmp_rcv"
+        5: "RX_S0_netif_receive_skb",
+        6: "RX_S1_netdev_frame_hook",
+        7: "RX_S2_ovs_dp_process",
+        8: "RX_S3_ovs_vport_send",
+        9: "RX_S4_tcp_v4_rcv/udp_rcv/icmp_rcv"
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
