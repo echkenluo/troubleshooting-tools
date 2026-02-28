@@ -184,7 +184,6 @@ BPF_STACK_TRACE(stack_traces, 8192); // Increase size if needed
 
 // Helper function to extract SKB details
 static inline int get_skb_details(struct sk_buff *skb, struct skb_info_t *info) {
-    bpf_trace_printk("get_skb_details entered\\n");
     if (!skb) return -1;
 
     info->ts = bpf_ktime_get_ns();
@@ -206,8 +205,7 @@ static inline int get_skb_details(struct sk_buff *skb, struct skb_info_t *info) 
         // dev pointer is NULL, clear the buffer
         __builtin_memset(info->ifname, 0, IFNAMSIZ);
     }
-    bpf_trace_printk("get_skb_details: dev_ptr=%llx, name_read_ret=%d\\n", dev, name_read_ret);
-    // --- End Device Name Reading + Debug ---
+    // --- End Device Name Reading ---
 
     // Check if it's an IP packet (needed before accessing network_header)
     u16 network_proto;

@@ -188,26 +188,21 @@ static inline int check_filter(u32 saddr, u32 daddr, u16 sport, u16 dport, u8 pr
     if (!enabled || *enabled == 0) {
         return 1;  // No filtering enabled
     }
-    
-    bpf_trace_printk("Filter called\\n");
-    
+
     u32 *f_saddr = filter_saddr.lookup(&key);
     u32 *f_daddr = filter_daddr.lookup(&key);
     u16 *f_sport = filter_sport.lookup(&key);
     u16 *f_dport = filter_dport.lookup(&key);
     u8 *f_protocol = filter_protocol.lookup(&key);
-    
+
     // OR logic: if any configured filter matches, accept the packet
     if (f_saddr && *f_saddr != 0 && *f_saddr == saddr) {
-        bpf_trace_printk("SADDR matched\\n");
         return 1;
     }
     if (f_daddr && *f_daddr != 0 && *f_daddr == daddr) {
-        bpf_trace_printk("DADDR matched\\n");
         return 1;
     }
     if (f_sport && *f_sport != 0 && *f_sport == sport) {
-        bpf_trace_printk("SPORT matched\\n");
         return 1;
     }
     if (f_dport && *f_dport != 0 && *f_dport == dport) {
@@ -216,8 +211,7 @@ static inline int check_filter(u32 saddr, u32 daddr, u16 sport, u16 dport, u8 pr
     if (f_protocol && *f_protocol != 0 && *f_protocol == protocol) {
         return 1;
     }
-    
-    bpf_trace_printk("No match dropping\\n");
+
     return 0;  // No filters matched
 }
 
