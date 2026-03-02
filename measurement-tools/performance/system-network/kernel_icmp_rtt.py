@@ -940,7 +940,7 @@ static const int target_ifindexes[IFACE_COUNT] = {%s};
     else:
         iface_array_code = """
 #define IFACE_COUNT 0
-// No interface filter - all interfaces monitored
+static const int target_ifindexes[1] = {0};
 """
 
     try:

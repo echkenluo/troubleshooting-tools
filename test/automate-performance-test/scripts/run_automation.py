@@ -283,6 +283,10 @@ Examples:
     parser.add_argument('--direction', choices=['rx', 'tx'],
                        help='Filter by direction')
 
+    # Log retention
+    parser.add_argument('--keep-tool-logs', action='store_true',
+                       help='Keep eBPF tool output logs instead of deleting after each case')
+
     args = parser.parse_args()
 
     # Setup logging
@@ -332,6 +336,9 @@ Examples:
         )
 
         configs = config_loader.load_all_configs()
+
+        # Store keep_tool_logs option in configs for downstream access
+        configs['keep_tool_logs'] = args.keep_tool_logs
 
         # Load test cases if using unified format
         test_cases = []

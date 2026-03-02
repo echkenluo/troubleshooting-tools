@@ -388,7 +388,7 @@ static __always_inline int parse_packet_key(struct sk_buff *skb, struct packet_k
     return 1;
 }
 
-static __always_inline void handle_event(struct pt_regs *ctx, struct sk_buff *skb,
+static __always_inline void handle_event(void *ctx, struct sk_buff *skb,
                                          u64 current_stage_global_id, struct packet_key_t *parsed_packet_key, u8 actual_icmp_type) {
     if (skb == NULL) {
         return;

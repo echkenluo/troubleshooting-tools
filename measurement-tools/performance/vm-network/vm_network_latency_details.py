@@ -561,7 +561,7 @@ static __always_inline int parse_packet_key(
 }
 
 // Common event handling function
-static __always_inline void handle_stage_event(struct pt_regs *ctx, struct sk_buff *skb, u8 stage_id) {
+static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u8 stage_id) {
     struct packet_key_t key = {};
     if (!parse_packet_key(skb, &key, stage_id)) {
         return;

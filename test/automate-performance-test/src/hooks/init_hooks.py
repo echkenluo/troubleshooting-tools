@@ -550,6 +550,29 @@ class InitHooks:
                 'details': f"Port {port} listening: {server_status}"
             })
 
+        elif test_type == "icmp_ping":
+            # ICMP ping doesn't need a server process, just verify connectivity
+            client_ip = context.get('client_ip')
+            client_host_ref = context.get('client_host_ref')
+
+            # Verify basic ICMP connectivity from server to client
+            stdout, stderr, exit_code = self.ssh_manager.execute_command(
+                server_host_ref, f"ping -c 1 -W 2 {client_ip} > /dev/null 2>&1 && echo 'OK' || echo 'FAIL'"
+            )
+            s2c_ok = 'OK' in stdout
+
+            # Verify from client to server
+            stdout, stderr, exit_code = self.ssh_manager.execute_command(
+                client_host_ref, f"ping -c 1 -W 2 {server_ip} > /dev/null 2>&1 && echo 'OK' || echo 'FAIL'"
+            )
+            c2s_ok = 'OK' in stdout
+
+            results['tasks'].append({
+                'name': 'verify_icmp_connectivity',
+                'status': s2c_ok and c2s_ok,
+                'details': f"ICMP connectivity: c2s={c2s_ok}, s2c={s2c_ok}"
+            })
+
         return results
 
     def get_case_context(self, tool_id, case_id):

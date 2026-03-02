@@ -76,6 +76,17 @@ class PostHooks:
                 'status': True
             })
 
+        elif test_type == "icmp_ping":
+            client_host_ref = context.get('client_host_ref')
+            client_ip = context.get('client_ip')
+            self.ssh_manager.execute_command(server_host_ref, f'pkill -f "ping.*{client_ip}" || true')
+            if client_host_ref:
+                self.ssh_manager.execute_command(client_host_ref, f'pkill -f "ping.*{server_ip}" || true')
+            results['tasks'].append({
+                'name': 'stop_icmp_ping',
+                'status': True
+            })
+
         # Collect test results
         collect_cmd = f"""
             echo "Test {test_type} completed at: $(date '+%Y-%m-%d %H:%M:%S.%N')" > {result_path}/test_complete_{test_type}_{timestamp}.log
@@ -396,23 +407,38 @@ class PostHooks:
                 'status': True
             })
 
-            # Delete eBPF output file to save disk space
-            delete_output_cmd = f"""
-                OUTPUT_FILE="{ebpf_result_path}/ebpf_output_{timestamp}.log"
-                if [ -f "$OUTPUT_FILE" ]; then
-                    OUTPUT_SIZE=$(stat -c %s "$OUTPUT_FILE" 2>/dev/null || echo 0)
-                    echo "Deleting eBPF output file: $OUTPUT_FILE (size: $OUTPUT_SIZE bytes)" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
-                    rm -f "$OUTPUT_FILE"
-                    echo "eBPF output file deleted at: $(date '+%Y-%m-%d %H:%M:%S.%N')" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
-                else
-                    echo "eBPF output file not found: $OUTPUT_FILE" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
-                fi
-            """
-            self.ssh_manager.execute_command(ebpf_host_ref, delete_output_cmd)
-            results['tasks'].append({
-                'name': 'delete_ebpf_output_file',
-                'status': True
-            })
+            # Delete or keep eBPF output file based on keep_tool_logs setting
+            keep_tool_logs = context.get('keep_tool_logs', False)
+            if not keep_tool_logs:
+                delete_output_cmd = f"""
+                    OUTPUT_FILE="{ebpf_result_path}/ebpf_output_{timestamp}.log"
+                    if [ -f "$OUTPUT_FILE" ]; then
+                        OUTPUT_SIZE=$(stat -c %s "$OUTPUT_FILE" 2>/dev/null || echo 0)
+                        echo "Deleting eBPF output file: $OUTPUT_FILE (size: $OUTPUT_SIZE bytes)" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
+                        rm -f "$OUTPUT_FILE"
+                        echo "eBPF output file deleted at: $(date '+%Y-%m-%d %H:%M:%S.%N')" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
+                    else
+                        echo "eBPF output file not found: $OUTPUT_FILE" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
+                    fi
+                """
+                self.ssh_manager.execute_command(ebpf_host_ref, delete_output_cmd)
+                results['tasks'].append({
+                    'name': 'delete_ebpf_output_file',
+                    'status': True
+                })
+            else:
+                keep_output_cmd = f"""
+                    OUTPUT_FILE="{ebpf_result_path}/ebpf_output_{timestamp}.log"
+                    if [ -f "$OUTPUT_FILE" ]; then
+                        OUTPUT_SIZE=$(stat -c %s "$OUTPUT_FILE" 2>/dev/null || echo 0)
+                        echo "Keeping eBPF output file: $OUTPUT_FILE (size: $OUTPUT_SIZE bytes)" >> {ebpf_result_path}/ebpf_case_complete_{timestamp}.log
+                    fi
+                """
+                self.ssh_manager.execute_command(ebpf_host_ref, keep_output_cmd)
+                results['tasks'].append({
+                    'name': 'keep_ebpf_output_file',
+                    'status': True
+                })
 
         # Collect performance test data (on performance test host)
         perf_collect_cmd = f"""
@@ -528,6 +554,7 @@ class PostHooks:
             final_cleanup_cmd = """
                 pkill -f "iperf3.*-s" || true
                 pkill -f "netserver" || true
+                pkill -f "ping.*-i.*-c" || true
                 pkill -f "python.*ebpf" || true
             """
             self.ssh_manager.execute_command(host_ref, final_cleanup_cmd)

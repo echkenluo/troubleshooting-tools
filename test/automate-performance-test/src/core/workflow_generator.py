@@ -459,6 +459,15 @@ class EBPFCentricWorkflowGenerator:
             'extra': ''
         }
 
+        # Get performance tests, protocol-aware for ICMP tools
+        perf_tests = self._get_performance_tests_for_env(env_name, perf_spec)
+        protocol = test_params.get('protocol', 'tcp')
+        if protocol == 'icmp' and 'icmp_ping' in perf_spec.get('performance_tests', {}):
+            perf_tests.append({
+                "type": "icmp_ping",
+                "configs": ["bidirectional"]
+            })
+
         return {
             "cycle_id": f"{tool_id}_case_{case_id}_{env_name}",
             "cycle_type": "ebpf_test",
@@ -484,7 +493,7 @@ class EBPFCentricWorkflowGenerator:
                     "custom_monitoring": True,
                     "ebpf_startup_command": case.get('command', '')
                 },
-                "performance_tests": self._get_performance_tests_for_env(env_name, perf_spec),
+                "performance_tests": perf_tests,
                 "post_hook": {
                     "tasks": [
                         "stop_custom_monitoring",

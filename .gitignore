@@ -17,6 +17,7 @@ packaging/rpm/output
 .task
 docs/planning-with-files
 docs/plans
+.serena/
 
 # Ignore subdirectory CLAUDE.md, keep root only
 **/CLAUDE.md

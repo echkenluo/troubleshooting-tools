@@ -1,0 +1,55 @@
+# Performance Test Analysis Configuration - Intel 4.19 New Tools
+# OS: openEuler 6.2.0, Kernel: 4.19, CPU: Intel
+# Scope: 12 newly added tools only (Phase 4 performance testing)
+
+# Data root directory (relative to this config file)
+data_root: "../results/os620-kernel-419-intel-perf-new-tools"
+
+# Available iterations
+iterations:
+  - iteration_001
+  - iteration_002
+  - iteration_003
+
+# Selected iterations for analysis
+selected_iterations: all
+
+# Topics configuration - 12 new tools only
+topics:
+  host:
+    # Latency measurement tools
+    - enqueue_to_iprec_latency_summary
+    - enqueue_to_iprec_latency_threshold
+    - tcp_rtt_inflight_summary
+    - syscall_recv_latency_summary
+    # Path tracer tools
+    - system_icmp_path_tracer
+    - system_tcp_path_tracer
+    - system_udp_path_tracer
+  vm:
+    # KVM/virt latency tools
+    - tun_tx_to_kvm_irq
+    - kvm_vhost_tun_latency_no_discovery_details
+    # Boundary path tracer tools
+    - icmp_path_tracer
+    - tcp_path_tracer
+    - udp_path_tracer
+
+# Output configuration
+output_dir: "./output"
+output_subdir: "os620-kernel-419-intel-new-tools"
+output_formats:
+  - csv
+  - markdown
+
+# Performance degradation thresholds (for highlighting)
+thresholds:
+  latency_degradation_percent: 5.0
+  throughput_degradation_percent: 5.0
+  pps_degradation_percent: 5.0
+
+# Logging configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "./analysis_intel_419_new_tools.log"

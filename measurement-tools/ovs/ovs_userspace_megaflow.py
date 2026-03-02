@@ -1121,8 +1121,8 @@ def main():
         print("Error: %s" % str(e))
         sys.exit(1)
     
-    b["upcall_events"].open_perf_buffer(handle_upcall_event)
-    b["flow_cmd_new_events"].open_perf_buffer(handle_flow_cmd_new_event)
+    b["upcall_events"].open_perf_buffer(handle_upcall_event, page_cnt=256)
+    b["flow_cmd_new_events"].open_perf_buffer(handle_flow_cmd_new_event, page_cnt=256)
     
     print("\\n Starting monitoring...\\n")
     

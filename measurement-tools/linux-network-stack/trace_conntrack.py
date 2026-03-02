@@ -174,8 +174,8 @@ else:
         })
 
     print("--- Filters ---")
-    print("Src IP: %s (Network Order Int: 0x%x)" % (args.src_ip if args.src_ip else "Any", src_ip_filter))
-    print("Dst IP: %s (Network Order Int: 0x%x)" % (args.dst_ip if args.dst_ip else "Any", dst_ip_filter))
+    print("Src IP: %s (Host Order Int: 0x%x)" % (args.src_ip if args.src_ip else "Any", src_ip_filter))
+    print("Dst IP: %s (Host Order Int: 0x%x)" % (args.dst_ip if args.dst_ip else "Any", dst_ip_filter))
     print("Protocol: %s (%d)" % (args.protocol, proto_filter))
     if proto_filter in [socket.IPPROTO_TCP, socket.IPPROTO_UDP]:
         print("Src Port: %s (Host Order)" % (src_port_filter if src_port_filter else "Any"))

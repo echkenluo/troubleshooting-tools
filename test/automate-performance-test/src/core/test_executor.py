@@ -534,7 +534,8 @@ class TestExecutor:
             'tool_id': cycle.get('ebpf_case', {}).get('tool_id'),
             'case_id': cycle.get('ebpf_case', {}).get('case_id'),
             'ebpf_command': cycle.get('ebpf_case', {}).get('command'),
-            'workflow': workflow_spec  # Add workflow_spec to context
+            'workflow': workflow_spec,  # Add workflow_spec to context
+            'keep_tool_logs': self.config.get('keep_tool_logs', False)
         }
 
         # DEBUG: Log final context
@@ -625,13 +626,17 @@ class TestExecutor:
                 streams = self._get_config_value(multi_spec.get('streams'), 2)
                 target_bw = self._get_config_value(multi_spec.get('target_bw'), '1G')
 
+        elif test_type == "icmp_ping":
+            icmp_spec = perf_specs.get('icmp_ping', {})
+            duration = icmp_spec.get('duration', 10)
+
         # NOW determine result path after we have streams - organized by test_type then config
         conn_type = self._get_connection_type(config, streams)
         base_result_path = cycle_context['result_path']
         # Create test_type subdirectory within server_results for better organization
         result_path = f"{base_result_path}/server_results/{test_type}/{conn_type}_{timestamp}"
 
-        return {
+        context = {
             'test_type': test_type,
             'test_config': config,
             'server_ip': server_ip,
@@ -645,6 +650,13 @@ class TestExecutor:
             'streams': streams,        # From workflow config
             'target_bw': target_bw     # From workflow config
         }
+
+        # Add ICMP-specific fields
+        if test_type == "icmp_ping":
+            icmp_spec = perf_specs.get('icmp_ping', {})
+            context['interval'] = icmp_spec.get('interval', '0.01')
+
+        return context
 
     def _run_performance_test(self, test_type: str, config: str, test_context: Dict) -> Dict:
         """Run actual performance test with real commands"""
@@ -661,6 +673,8 @@ class TestExecutor:
                 result = self._run_latency_test(config, test_context)
             elif test_type == "pps":
                 result = self._run_pps_test(config, test_context)
+            elif test_type == "icmp_ping":
+                result = self._run_icmp_test(config, test_context)
 
             result['status'] = "completed"
         except Exception as e:
@@ -900,6 +914,59 @@ class TestExecutor:
 
         result['test_start_time'] = test_start_time
         result['test_end_time'] = test_end_time
+        result['success'] = True
+
+        return result
+
+    def _run_icmp_test(self, config: str, test_context: Dict) -> Dict:
+        """Run ICMP ping test for bidirectional traffic generation"""
+        result = {"type": "icmp_ping", "config": config}
+
+        client_host = test_context['client_host_ref']
+        server_host = test_context['server_host_ref']
+        server_ip = test_context['server_ip']
+        client_ip = test_context['client_ip']
+        result_path = test_context['result_path']
+        duration = test_context.get('duration', 10)
+        interval = test_context.get('interval', '0.01')
+
+        # Ensure result directories exist
+        client_result_path = result_path.replace('server_results', 'client_results')
+        self.ssh_manager.execute_command(client_host, f"mkdir -p {client_result_path}")
+        self.ssh_manager.execute_command(server_host, f"mkdir -p {result_path}")
+
+        # Calculate count from duration and interval
+        count = int(float(duration) / float(interval))
+
+        start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+        if config == "bidirectional":
+            # Client -> Server ping
+            c2s_file = f"{client_result_path}/icmp_ping_c2s.txt"
+            c2s_cmd = f"nohup ping -c {count} -i {interval} {server_ip} > {c2s_file} 2>&1 &"
+            self.ssh_manager.execute_command(client_host, c2s_cmd)
+
+            # Server -> Client ping
+            s2c_file = f"{result_path}/icmp_ping_s2c.txt"
+            s2c_cmd = f"nohup ping -c {count} -i {interval} {client_ip} > {s2c_file} 2>&1 &"
+            self.ssh_manager.execute_command(server_host, s2c_cmd)
+
+            # Wait for pings to complete
+            wait_cmd = f"sleep {duration + 2}"
+            self.ssh_manager.execute_command(client_host, wait_cmd)
+
+            result['c2s_output'] = c2s_file
+            result['s2c_output'] = s2c_file
+        else:
+            # Unidirectional: client -> server only
+            ping_file = f"{client_result_path}/icmp_ping.txt"
+            ping_cmd = f"ping -c {count} -i {interval} {server_ip} > {ping_file} 2>&1"
+            self.ssh_manager.execute_command(client_host, ping_cmd)
+            result['output'] = ping_file
+
+        end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        result['start_time'] = start_time
+        result['end_time'] = end_time
         result['success'] = True
 
         return result

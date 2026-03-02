@@ -30,7 +30,8 @@ def setup_logging(log_file: str):
 
 
 def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger,
-                        filter_options: dict = None) -> bool:
+                        filter_options: dict = None,
+                        keep_tool_logs: bool = False) -> bool:
     """Run single automation test iteration
 
     Args:
@@ -38,6 +39,7 @@ def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger,
         iteration: Current iteration number
         logger: Logger instance
         filter_options: Optional dict with filter options (tools, environments, etc.)
+        keep_tool_logs: If True, pass --keep-tool-logs to run_automation.py
 
     Returns:
         True if successful, False otherwise
@@ -71,6 +73,9 @@ def run_automation_test(config_dir: str, iteration: int, logger: logging.Logger,
                 cmd.extend(['--protocol', filter_options['protocol']])
             if filter_options.get('direction'):
                 cmd.extend(['--direction', filter_options['direction']])
+
+        if keep_tool_logs:
+            cmd.append('--keep-tool-logs')
 
         logger.info(f"Executing command: {' '.join(cmd)}")
 
@@ -322,6 +327,10 @@ def main():
     parser.add_argument('--direction', choices=['rx', 'tx'],
                        help='Filter by direction (passed to run_automation.py)')
 
+    # Log retention
+    parser.add_argument('--keep-tool-logs', action='store_true',
+                       help='Keep eBPF tool output logs (passed to run_automation.py)')
+
     args = parser.parse_args()
 
     # Setup paths
@@ -400,7 +409,8 @@ def main():
 
                 # Run automation test
                 test_success = run_automation_test(args.config_dir, iteration, logger,
-                                                   filter_options if filter_options else None)
+                                                   filter_options if filter_options else None,
+                                                   keep_tool_logs=args.keep_tool_logs)
 
                 if not test_success:
                     logger.error(f"Iteration {iteration} test execution failed")

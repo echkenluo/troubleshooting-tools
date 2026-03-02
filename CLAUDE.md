@@ -247,32 +247,6 @@ docs/
 2. **Field Support Team**: Collect logs following documented procedures, forward to dev team
 
 
-## planning-with-files Directory Convention
-
-When using the planning-with-files skill for complex tasks:
-
-1. **Create task directory**: `docs/planning-with-files/{task-name}/`
-2. **All planning files go in this directory**:
-   - `task_plan.md` - Phase tracking and decisions
-   - `findings.md` - Research and discoveries
-   - `progress.md` - Session log and test results
-3. **Task name should be kebab-case** (e.g., `tcp-udp-drop-detector`)
-
-Example structure:
-```
-docs/planning-with-files/
-├── tcp-udp-drop-detector/
-│   ├── task_plan.md
-│   ├── findings.md
-│   └── progress.md
-└── traffic-analyzer-impl/
-    ├── task_plan.md
-    ├── findings.md
-    └── progress.md
-```
-
-**Important**: Always create files in the task subdirectory, never in the project root. 
-
 ## Reference Materials
 
 - **Kernel probe functions**: `kprobe_functions.txt` (available kprobe points for target kernel)

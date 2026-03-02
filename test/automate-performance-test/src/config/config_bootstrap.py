@@ -529,7 +529,7 @@ class ConfigBootstrap:
             if not env_config:
                 continue
 
-            directions = category_config.get('directions', {})
+            category_directions = category_config.get('directions', {})
             tools_list = category_config.get('tools', [])
 
             # Build environment variables
@@ -541,6 +541,9 @@ class ConfigBootstrap:
                 parameters = tool_config.get('parameters', {})
                 defaults = {k: v for k, v in tool_config.items()
                            if k not in ('script', 'template', 'parameters', 'directions')}
+
+                # Tool-level directions override category-level directions
+                directions = tool_config.get('directions', category_directions)
 
                 # Build local path
                 local_path = f"{category_name}/{script}"
@@ -692,6 +695,40 @@ class ConfigBootstrap:
             return f"{base_name}_{'_'.join(parts)}"
         return base_name
 
+    def load_full_config(self, full_config_path: str):
+        """Load existing full config and update its tools section from template.
+
+        Skips SSH discovery by loading a previously generated full config,
+        then merges the current tools template with resolved dynamic params.
+        """
+        with open(full_config_path, 'r') as f:
+            self._full_config = yaml.safe_load(f) or {}
+
+        # Merge updated tools template
+        new_tools = copy.deepcopy(self.tools_template.get('tools', {}))
+
+        # Resolve vhost_pids from existing kvm_config
+        vm_env = self._full_config.get('environments', {}).get('vm', {})
+        kvm_config = vm_env.get('kvm_config', {})
+        kvm_server = kvm_config.get('server', kvm_config) if isinstance(kvm_config.get('server'), dict) else kvm_config
+        vhost_pids = kvm_server.get('vhost_pids', [])
+
+        categories = new_tools.get('categories', {})
+        kvm_category = categories.get('kvm-virt-network/kvm', {})
+        for tool in kvm_category.get('tools', []):
+            params = tool.get('parameters', {})
+            if 'vhost_pid' in params and params['vhost_pid'] == '{vhost_pids}':
+                params['vhost_pid'] = list(vhost_pids) if vhost_pids else ['0']
+
+        self._full_config['tools'] = new_tools
+
+        # Also update performance_tests from template
+        new_perf = self.perf_template.get('performance_tests', {})
+        if new_perf:
+            self._full_config['performance_tests'] = new_perf
+
+        logger.info(f"Loaded full config from {full_config_path}, updated tools and perf from template")
+
     def save_full_config(self, output_path: str):
         """Save full config to YAML file."""
         if self._full_config is None:
@@ -724,12 +761,14 @@ class ConfigBootstrap:
             executor.close()
 
 
-def bootstrap_config(input_path: str, output_dir: str = None) -> Tuple[dict, List[dict]]:
-    """Bootstrap full config and test cases from minimal input.
+def bootstrap_config(input_path: str, output_dir: str = None,
+                     from_full_config: str = None) -> Tuple[dict, List[dict]]:
+    """Bootstrap full config and test cases.
 
     Args:
         input_path: Path to minimal input config
         output_dir: Directory to write generated files (optional)
+        from_full_config: Path to existing full config (skip SSH discovery)
 
     Returns:
         Tuple of (full_config, test_cases)
@@ -737,10 +776,15 @@ def bootstrap_config(input_path: str, output_dir: str = None) -> Tuple[dict, Lis
     bootstrap = ConfigBootstrap(input_path)
 
     try:
-        logger.info(f"Starting discovery from {input_path}")
-        bootstrap.discover_all()
+        if from_full_config:
+            logger.info(f"Loading existing full config from {from_full_config}")
+            bootstrap.load_full_config(from_full_config)
+        else:
+            logger.info(f"Starting discovery from {input_path}")
+            bootstrap.discover_all()
+            bootstrap.generate_full_config()
 
-        full_config = bootstrap.generate_full_config()
+        full_config = bootstrap._full_config
         test_cases = bootstrap.generate_test_cases()
 
         if output_dir:
@@ -765,6 +809,7 @@ def main():
     parser = argparse.ArgumentParser(description="Bootstrap full config from minimal input")
     parser.add_argument('--input', '-i', required=True, help='Minimal input config path')
     parser.add_argument('--output-dir', '-o', help='Output directory for generated files')
+    parser.add_argument('--from-full-config', help='Load existing full config instead of SSH discovery')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     parser.add_argument('--list-cases', action='store_true', help='List generated test cases')
 
@@ -775,7 +820,9 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    full_config, test_cases = bootstrap_config(args.input, args.output_dir)
+    full_config, test_cases = bootstrap_config(
+        args.input, args.output_dir, from_full_config=args.from_full_config
+    )
 
     if args.list_cases:
         print(f"\nGenerated {len(test_cases)} test cases:")
