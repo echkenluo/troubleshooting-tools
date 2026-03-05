@@ -353,18 +353,30 @@ calculate_process_cpu_usage() {
     echo "$total_time_diff $hz $time_interval" | awk '{printf "%.2f", ($1 / $2) / $3 * 100}'
 }
 
+cache_all_processes() {
+    local cache_file="/tmp/cpu_monitor_$$_ps_cache"
+    ps -eLo pid,tid,psr,comm --no-headers > "$cache_file" 2>/dev/null
+}
+
 collect_processes_on_cpu_start() {
     local target_cpu="$1"
     local temp_file="/tmp/cpu_monitor_$$_${target_cpu}_start"
-    
-    local process_list_1=$(ps -eLo pid,tid,psr,comm --no-headers | awk -v cpu="$target_cpu" '$3 == cpu {print $1, $2, $4}')
-    
+    local cache_file="/tmp/cpu_monitor_$$_ps_cache"
+
+    # Use cached ps output if available, otherwise fallback to direct ps call
+    local process_list_1
+    if [ -f "$cache_file" ]; then
+        process_list_1=$(awk -v cpu="$target_cpu" '$3 == cpu {print $1, $2, $4}' "$cache_file")
+    else
+        process_list_1=$(ps -eLo pid,tid,psr,comm --no-headers | awk -v cpu="$target_cpu" '$3 == cpu {print $1, $2, $4}')
+    fi
+
     if [ -z "$process_list_1" ]; then
         return
     fi
-    
+
     > "$temp_file"
-    
+
     while read -r pid tid comm; do
         local cpu_time=$(read_process_cpu_time "$pid" "$tid")
         if [ -n "$cpu_time" ]; then
@@ -383,6 +395,11 @@ collect_processes_on_cpu_start() {
             echo "${pid}|${tid}|${cpu_time}|${real_comm}" >> "$temp_file"
         fi
     done <<< "$process_list_1"
+}
+
+cleanup_ps_cache() {
+    local cache_file="/tmp/cpu_monitor_$$_ps_cache"
+    rm -f "$cache_file" 2>/dev/null
 }
 
 calculate_processes_on_cpu_end() {
@@ -435,10 +452,16 @@ format_report() {
     for cpu in $monitored_cpus; do
         prev_stats[$cpu]=$(read_cpu_stats "$cpu")
     done
-    
+
+    # Cache ps output once for all CPUs to improve performance
+    cache_all_processes
+
     for cpu in $monitored_cpus; do
         collect_processes_on_cpu_start "$cpu"
     done
+
+    # Clean up ps cache after use
+    cleanup_ps_cache
     
     if [ "$PERF_THRESHOLD" -gt 0 ]; then
         log_message "${YELLOW} CPU perf  (${INTERVAL}s)${NC}"
@@ -519,8 +542,11 @@ format_report() {
 
 monitor_cycle() {
     local monitored_cpus="$1"
-    local report=$(format_report "$monitored_cpus")
-    log_message "$report"
+    # Call format_report directly and pipe output through log_message
+    # This avoids waiting for the entire report to complete before showing output
+    format_report "$monitored_cpus" | while IFS= read -r line; do
+        log_message "$line"
+    done
 }
 
 start_monitoring() {

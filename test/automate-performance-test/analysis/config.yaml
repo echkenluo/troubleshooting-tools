@@ -1,0 +1,51 @@
+# Performance Test Analysis Configuration
+
+# Data root directory (relative to this config file)
+data_root: "../results/1022"
+
+# Available iterations
+iterations:
+  - iteration_001
+  - iteration_002
+  - iteration_003
+
+# Selected iterations for analysis
+# Supports:
+#   - Single iteration: "iteration_001"
+#   - Multiple iterations: ["iteration_001", "iteration_002", "iteration_003"]
+#   - All iterations: "all" (will use all iterations from the 'iterations' list above)
+selected_iterations: all
+
+# Topics configuration
+topics:
+  host:
+    - system_network_performance
+    - linux_network_stack
+  vm:
+    - kvm_virt_network
+    - ovs_monitoring
+    - vm_network_performance
+
+# Output configuration
+# output_dir: Base output directory (default: ./output)
+# output_subdir: Subdirectory name under output_dir
+#   - If not specified, will auto-generate from data_root (e.g., "1022" from "../results/1022")
+#   - Can be customized to any unique name (e.g., "test_20251023", "baseline_comparison")
+# Final structure: {output_dir}/{output_subdir}/iteration_XXX/
+output_dir: "./output"
+output_subdir: ""  # Empty means auto-generate from data_root
+output_formats:
+  - csv
+  - markdown
+
+# Performance degradation thresholds (for highlighting)
+thresholds:
+  latency_degradation_percent: 5.0
+  throughput_degradation_percent: 5.0
+  pps_degradation_percent: 5.0
+
+# Logging configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "./analysis.log"

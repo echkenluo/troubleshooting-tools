@@ -71,8 +71,20 @@ def is_normal_kfree_pattern(stack_trace):
     return False
 
 def ip_to_hex(ip):
-    """Convert IP address to hex format"""
+    """Convert IPv4 address to hex format"""
     return unpack("I", inet_aton(ip))[0]
+
+def ipv6_to_u64_pair(ip):
+    """Convert IPv6 address to two 64-bit integers for BPF comparison.
+    Use little-endian to match how x86 CPU interprets memory read by bpf_probe_read."""
+    packed = socket.inet_pton(AF_INET6, ip)
+    high = unpack("<Q", packed[:8])[0]
+    low = unpack("<Q", packed[8:])[0]
+    return high, low
+
+def is_ipv6(ip):
+    """Check if IP address is IPv6"""
+    return ':' in ip
 
 def parse_protocol_filter(protocol_str):
     """Parse protocol filter argument"""
@@ -109,8 +121,30 @@ args = parser.parse_args()
 # Process arguments
 l4_protocol_map = {'all': 0, 'icmp': 1, 'tcp': 6, 'udp': 17}
 l4_protocol = l4_protocol_map.get(args.l4_protocol, 0)
-src_ip = args.src_ip if args.src_ip else "0.0.0.0"
-dst_ip = args.dst_ip if args.dst_ip else "0.0.0.0"
+
+# Detect IPv4 vs IPv6 for source and destination
+src_ip_is_v6 = args.src_ip and is_ipv6(args.src_ip)
+dst_ip_is_v6 = args.dst_ip and is_ipv6(args.dst_ip)
+
+# IPv4 filter values
+src_ip = "0.0.0.0"
+dst_ip = "0.0.0.0"
+# IPv6 filter values (high, low pairs)
+src_ipv6_hi, src_ipv6_lo = 0, 0
+dst_ipv6_hi, dst_ipv6_lo = 0, 0
+
+if args.src_ip:
+    if src_ip_is_v6:
+        src_ipv6_hi, src_ipv6_lo = ipv6_to_u64_pair(args.src_ip)
+    else:
+        src_ip = args.src_ip
+
+if args.dst_ip:
+    if dst_ip_is_v6:
+        dst_ipv6_hi, dst_ipv6_lo = ipv6_to_u64_pair(args.dst_ip)
+    else:
+        dst_ip = args.dst_ip
+
 src_port = args.src_port if args.src_port else 0
 dst_port = args.dst_port if args.dst_port else 0
 vlan_filter = args.vlan_id if args.vlan_id else 0
@@ -124,8 +158,14 @@ else:
 print("Enhanced Ethernet Packet Drop Monitor (ARM Compatible)")
 print("Protocol filter: {} (0x{:04x})".format(args.type, protocol_filter))
 print("L4 Protocol filter: {}".format(args.l4_protocol))
-print("Source IP: {}".format(src_ip))
-print("Destination IP: {}".format(dst_ip))
+if args.src_ip:
+    print("Source IP: {} ({})".format(args.src_ip, "IPv6" if src_ip_is_v6 else "IPv4"))
+else:
+    print("Source IP: any")
+if args.dst_ip:
+    print("Destination IP: {} ({})".format(args.dst_ip, "IPv6" if dst_ip_is_v6 else "IPv4"))
+else:
+    print("Destination IP: any")
 if src_port or dst_port:
     print("Source port: {}, Destination port: {}".format(src_port, dst_port))
 if vlan_filter:
@@ -136,6 +176,7 @@ print("Verbose mode: {}".format('ON' if args.verbose else 'OFF'))
 print("Stack trace: {}".format('OFF' if args.no_stack_trace else 'ON'))
 print("Normal pattern filter: {}".format('OFF' if args.disable_normal_filter else 'ON'))
 print("-" * 80)
+sys.stdout.flush()
 
 src_ip_hex = ip_to_hex(src_ip)
 dst_ip_hex = ip_to_hex(dst_ip)
@@ -210,6 +251,12 @@ BPF_ARRAY(interface_map, union name_buf, 1);
 #define VLAN_FILTER %d
 #define INTERFACE_FILTER_ENABLED %d
 
+// IPv6 filter constants (128-bit as two 64-bit values)
+#define SRC_IPV6_HI 0x%xULL
+#define SRC_IPV6_LO 0x%xULL
+#define DST_IPV6_HI 0x%xULL
+#define DST_IPV6_LO 0x%xULL
+
 // Simplified packet data structure without union
 struct packet_data_t {
     u64 timestamp;
@@ -249,6 +296,8 @@ struct packet_data_t {
     u8 ipv6_nexthdr;
     u8 ipv6_hop_limit;
     u16 ipv6_payload_len;
+    u16 ipv6_sport;
+    u16 ipv6_dport;
     
     // ARP fields
     u16 arp_hrd;
@@ -321,8 +370,8 @@ static inline bool interface_filter(struct sk_buff *skb) {
     return true;
 }
 
-int trace_kfree_skb(struct pt_regs *ctx) {
-    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM1(ctx);
+TRACEPOINT_PROBE(skb, kfree_skb) {
+    struct sk_buff *skb = (struct sk_buff *)args->skbaddr;
     if (skb == NULL) return 0;
     
     // Apply interface filter first (most efficient)
@@ -336,7 +385,7 @@ int trace_kfree_skb(struct pt_regs *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     data.pid = pid_tgid & 0xFFFFFFFF;
     data.tgid = pid_tgid >> 32;
-    data.stack_id = stack_traces.get_stackid(ctx, BPF_F_REUSE_STACKID);
+    data.stack_id = stack_traces.get_stackid(args, BPF_F_REUSE_STACKID);
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
     
     // Get execution context information
@@ -507,6 +556,50 @@ int trace_kfree_skb(struct pt_regs *ctx) {
             data.ipv6_nexthdr = ip6h.nexthdr;
             data.ipv6_hop_limit = ip6h.hop_limit;
             data.ipv6_payload_len = ntohs(ip6h.payload_len);
+
+            // Check L4 protocol filter for IPv6
+            if (L4_PROTOCOL != 0 && ip6h.nexthdr != L4_PROTOCOL) {
+                return 0;
+            }
+
+            // Check IPv6 address filters (ip6h is already on stack, access directly)
+            if (SRC_IPV6_HI != 0 || SRC_IPV6_LO != 0) {
+                u64 *saddr_ptr = (u64 *)&ip6h.saddr;
+                if (saddr_ptr[0] != SRC_IPV6_HI || saddr_ptr[1] != SRC_IPV6_LO) {
+                    return 0;
+                }
+            }
+            if (DST_IPV6_HI != 0 || DST_IPV6_LO != 0) {
+                u64 *daddr_ptr = (u64 *)&ip6h.daddr;
+                if (daddr_ptr[0] != DST_IPV6_HI || daddr_ptr[1] != DST_IPV6_LO) {
+                    return 0;
+                }
+            }
+
+            // Parse TCP/UDP ports for IPv6
+            if (ip6h.nexthdr == IPPROTO_TCP || ip6h.nexthdr == IPPROTO_UDP) {
+                unsigned char *transport_ptr = network_header_ptr + sizeof(struct ipv6hdr);
+
+                if (ip6h.nexthdr == IPPROTO_TCP) {
+                    struct tcphdr tcph;
+                    if (bpf_probe_read(&tcph, sizeof(tcph), transport_ptr) == 0) {
+                        data.ipv6_sport = ntohs(tcph.source);
+                        data.ipv6_dport = ntohs(tcph.dest);
+                    }
+                } else {
+                    struct udphdr udph;
+                    if (bpf_probe_read(&udph, sizeof(udph), transport_ptr) == 0) {
+                        data.ipv6_sport = ntohs(udph.source);
+                        data.ipv6_dport = ntohs(udph.dest);
+                    }
+                }
+
+                // Check port filters
+                if ((SRC_PORT != 0 && data.ipv6_sport != SRC_PORT) ||
+                    (DST_PORT != 0 && data.ipv6_dport != DST_PORT)) {
+                    return 0;
+                }
+            }
         }
     } else if (real_protocol == ETH_P_ARP) {
         data.protocol_type = 3;  // ARP
@@ -562,7 +655,7 @@ int trace_kfree_skb(struct pt_regs *ctx) {
         }
     }
     
-    packet_drops.perf_submit(ctx, &data, sizeof(data));
+    packet_drops.perf_submit(args, &data, sizeof(data));
     return 0;
 }
 """
@@ -571,8 +664,9 @@ int trace_kfree_skb(struct pt_regs *ctx) {
 interface_filter_enabled = 1 if interface_filter else 0
 
 b = BPF(text=bpf_text % (
-    src_ip_hex, dst_ip_hex, src_port, dst_port, 
-    protocol_filter, l4_protocol, vlan_filter, interface_filter_enabled
+    src_ip_hex, dst_ip_hex, src_port, dst_port,
+    protocol_filter, l4_protocol, vlan_filter, interface_filter_enabled,
+    src_ipv6_hi, src_ipv6_lo, dst_ipv6_hi, dst_ipv6_lo
 ))
 
 if interface_filter:
@@ -600,10 +694,7 @@ if interface_filter:
             target_name.name = str(interface_filter).encode('utf-8')
     interface_map[0] = target_name
 
-# Attach the kprobe
-b.attach_kprobe(event="kfree_skb", fn_name="trace_kfree_skb")
-
-# No debug code needed
+# Tracepoint is automatically attached via TRACEPOINT_PROBE macro
 
 # Define ctypes structure for packet data
 class PacketData(ct.Structure):
@@ -645,6 +736,8 @@ class PacketData(ct.Structure):
         ("ipv6_nexthdr", ct.c_uint8),
         ("ipv6_hop_limit", ct.c_uint8),
         ("ipv6_payload_len", ct.c_uint16),
+        ("ipv6_sport", ct.c_uint16),
+        ("ipv6_dport", ct.c_uint16),
         
         # ARP fields
         ("arp_hrd", ct.c_uint16),
@@ -682,13 +775,13 @@ def format_ip_address(ip_bytes):
 
 def format_ipv6_address(ip_bytes):
     """Format IPv6 address from bytes"""
-    return inet_ntop(AF_INET6, str(bytearray(ip_bytes)))
+    return inet_ntop(AF_INET6, bytes(ip_bytes))
 
 def print_packet_event(cpu, data, size):
     """Print packet drop event"""
     global b
     event = ct.cast(data, ct.POINTER(PacketData)).contents
-    
+
     # Skip normal patterns if not verbose
     if not args.disable_normal_filter and event.stack_id > 0:
         try:
@@ -762,6 +855,10 @@ def print_packet_event(cpu, data, size):
         print("  Hop Limit:   {}".format(event.ipv6_hop_limit))
         print("  Source IP:   {}".format(format_ipv6_address(event.ipv6_saddr)))
         print("  Dest IP:     {}".format(format_ipv6_address(event.ipv6_daddr)))
+
+        if event.ipv6_nexthdr in [socket.IPPROTO_TCP, socket.IPPROTO_UDP]:
+            proto_name = "TCP" if event.ipv6_nexthdr == socket.IPPROTO_TCP else "UDP"
+            print("  {} Ports: {} -> {}".format(proto_name, event.ipv6_sport, event.ipv6_dport))
         
     elif event.protocol_type == 3:  # ARP
         print("{}ARP PACKET".format(vlan_prefix))
@@ -824,13 +921,15 @@ def print_packet_event(cpu, data, size):
                 print("  <stack_traces table not found>")
             except Exception as e:
                 print("  <Error retrieving stack trace: {}>".format(e))
-    
+
     print("-" * 80)
+    sys.stdout.flush()
 
 # Register the callback
 b["packet_drops"].open_perf_buffer(print_packet_event)
 
 print("Starting packet drop monitoring... Press Ctrl+C to stop")
+sys.stdout.flush()
 
 # Main event loop
 try:

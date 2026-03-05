@@ -111,34 +111,32 @@ bpf_text = """
 #define PHY_IFINDEX1 %d
 #define PHY_IFINDEX2 %d
 #define DIRECTION_FILTER %d  // 1=vnet_rx, 2=vnet_tx
+#define STAGE_LATENCY_MODE %d  // 0=total-only, 1=per-stage breakdown
 
 // Stage definitions - vnet perspective
+// Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency measurement
 // VNET RX path (VM TX, packets from VM to external)
 #define STG_VNET_RX         1
 #define STG_OVS_RX          2
 #define STG_FLOW_EXTRACT_END_RX  3
-#define STG_OVS_UPCALL_RX   4
-#define STG_OVS_USERSPACE_RX 5
-#define STG_CT_RX           6
-#define STG_CT_OUT_RX       7
-#define STG_QDISC_ENQ       8
-#define STG_QDISC_DEQ       9
-#define STG_TX_QUEUE        10
-#define STG_TX_XMIT         11
+#define STG_CT_RX           4
+#define STG_CT_OUT_RX       5
+#define STG_QDISC_ENQ       6
+#define STG_QDISC_DEQ       7
+#define STG_TX_QUEUE        8   // dev_hard_start_xmit (physical dev)
+#define STG_TX_XMIT         9   // net:net_dev_xmit (physical dev) - LAST POINT
 
 // VNET TX path (VM RX, packets from external to VM)
-#define STG_PHY_RX          12
-#define STG_OVS_TX          13
-#define STG_FLOW_EXTRACT_END_TX  14
-#define STG_OVS_UPCALL_TX   15
-#define STG_OVS_USERSPACE_TX 16
-#define STG_CT_TX           17
-#define STG_CT_OUT_TX       18
-#define STG_VNET_QDISC_ENQ  19
-#define STG_VNET_QDISC_DEQ  20
-#define STG_VNET_TX         21
+#define STG_PHY_RX          10
+#define STG_OVS_TX          11
+#define STG_FLOW_EXTRACT_END_TX  12
+#define STG_CT_TX           13
+#define STG_CT_OUT_TX       14
+#define STG_VNET_QDISC_ENQ  15
+#define STG_VNET_QDISC_DEQ  16
+#define STG_VNET_TX         17  // dev_hard_start_xmit (vnet) - LAST POINT
 
-#define MAX_STAGES          22
+#define MAX_STAGES          18
 #define IFNAMSIZ            16
 
 // Packet key structure for unique packet identification
@@ -189,19 +187,39 @@ struct stage_pair_key_t {
     u8 latency_bucket;  // log2 of latency in microseconds
 };
 
+// Flow key for per-flow total latency aggregation
+struct flow_key_t {
+    __be32 sip;
+    __be32 dip;
+    __be16 sport;
+    __be16 dport;
+    u8  protocol;
+    u8  pad[3];
+};
+
+struct flow_bucket_key_t {
+    struct flow_key_t flow;
+    u8  latency_bucket;   // log2(us), 0-14
+    u8  pad[3];
+};
+
 // Maps
 BPF_TABLE("lru_hash", struct packet_key_t, struct flow_data_t, flow_sessions, 10240);
 
+#if STAGE_LATENCY_MODE
 // BPF Histogram for adjacent stage latencies - with stage pair as key
-// BPF_HISTOGRAM supports struct keys for creating separate histograms per key
 BPF_HISTOGRAM(adjacent_latency_hist, struct stage_pair_key_t, 1024);
+BPF_ARRAY(stage_pair_counters, u64, 32);
+#endif
 
 // BPF Histogram for total end-to-end latency - simple u8 key for direction
 BPF_HISTOGRAM(total_latency_hist, u8, 256);
 
+// BPF Histogram for per-flow total latency - keyed by (flow, bucket)
+BPF_HISTOGRAM(flow_total_hist, struct flow_bucket_key_t, 10240);
+
 // Performance statistics
 BPF_ARRAY(packet_counters, u64, 4);  // 0=total, 1=vnet_rx, 2=vnet_tx, 3=dropped
-BPF_ARRAY(stage_pair_counters, u64, 32);  // Count of stage pairs seen
 BPF_ARRAY(flow_stage_counters, u64, 4);  // 0=first_stage_rx, 1=last_stage_rx, 2=first_stage_tx, 3=last_stage_tx
 
 // Helper functions
@@ -239,52 +257,62 @@ static __always_inline bool is_target_phy_interface(const struct sk_buff *skb) {
     return (ifindex == PHY_IFINDEX1 || ifindex == PHY_IFINDEX2);
 }
 
-// Packet parsing functions
+// Packet parsing functions - simplified to match vm_network_performance_metrics.py
+// Note: No IP version validation here - trust network_header offset for consistent
+// flow tracking across stages. Protocol filter handles non-matching packets.
 static __always_inline int get_ip_header(struct sk_buff *skb, struct iphdr *ip) {
     unsigned char *head;
     u16 network_header_offset;
-    
+
     if (bpf_probe_read_kernel(&head, sizeof(head), &skb->head) < 0 ||
         bpf_probe_read_kernel(&network_header_offset, sizeof(network_header_offset), &skb->network_header) < 0) {
         return -1;
     }
-    
+
     if (network_header_offset == (u16)~0U || network_header_offset > 2048) {
         return -1;
     }
-    
+
     if (bpf_probe_read_kernel(ip, sizeof(*ip), head + network_header_offset) < 0) {
         return -1;
     }
-    
+
     return 0;
 }
 
+// Simplified transport header parsing - matches vm_network_performance_metrics.py
 static __always_inline int get_transport_header(struct sk_buff *skb, void *hdr, u16 hdr_size) {
     unsigned char *head;
     u16 transport_header_offset;
     u16 network_header_offset;
-    
+
     if (bpf_probe_read_kernel(&head, sizeof(head), &skb->head) < 0 ||
         bpf_probe_read_kernel(&transport_header_offset, sizeof(transport_header_offset), &skb->transport_header) < 0 ||
         bpf_probe_read_kernel(&network_header_offset, sizeof(network_header_offset), &skb->network_header) < 0) {
         return -1;
     }
-    
-    if (transport_header_offset == 0 || transport_header_offset == (u16)~0U || transport_header_offset == network_header_offset) {
-        struct iphdr ip;
-        if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network_header_offset) < 0) {
-            return -1;
+
+    // If transport_header is valid and different from network_header, use it
+    if (transport_header_offset != 0 && transport_header_offset != (u16)~0U &&
+        transport_header_offset != network_header_offset) {
+        if (bpf_probe_read_kernel(hdr, hdr_size, head + transport_header_offset) == 0) {
+            return 0;
         }
-        u8 ip_ihl = ip.ihl & 0x0F;
-        if (ip_ihl < 5) return -1;
-        transport_header_offset = network_header_offset + (ip_ihl * 4);
     }
-    
+
+    // Calculate transport header offset from IP header
+    struct iphdr ip;
+    if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network_header_offset) < 0) {
+        return -1;
+    }
+    u8 ip_ihl = ip.ihl & 0x0F;
+    if (ip_ihl < 5) return -1;
+    transport_header_offset = network_header_offset + (ip_ihl * 4);
+
     if (bpf_probe_read_kernel(hdr, hdr_size, head + transport_header_offset) < 0) {
         return -1;
     }
-    
+
     return 0;
 }
 
@@ -330,11 +358,11 @@ static __always_inline int parse_packet_key(
         case IPPROTO_TCP: {
             struct tcphdr tcp;
             if (get_transport_header(skb, &tcp, sizeof(tcp)) != 0) return 0;
-            
+
             key->tcp.source = tcp.source;
             key->tcp.dest = tcp.dest;
             key->tcp.seq = tcp.seq;
-            
+
             if (SRC_PORT_FILTER != 0 && key->tcp.source != htons(SRC_PORT_FILTER) && key->tcp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -345,14 +373,14 @@ static __always_inline int parse_packet_key(
         }
         case IPPROTO_UDP: {
             key->udp.id = ip.id;
-            
+
             struct udphdr udp;
             if (get_transport_header(skb, &udp, sizeof(udp)) == 0) {
                 key->udp.source = udp.source;
                 key->udp.dest = udp.dest;
                 key->udp.len = udp.len;
             }
-            
+
             if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
@@ -364,149 +392,11 @@ static __always_inline int parse_packet_key(
         case IPPROTO_ICMP: {
             struct icmphdr icmp;
             if (get_transport_header(skb, &icmp, sizeof(icmp)) != 0) return 0;
-            
+
             key->icmp.type = icmp.type;
             key->icmp.code = icmp.code;
             key->icmp.id = icmp.un.echo.id;
             key->icmp.sequence = icmp.un.echo.sequence;
-            break;
-        }
-        default:
-            return 0;
-    }
-    
-    return 1;
-}
-
-// Specialized parsing function for userspace SKB
-static __always_inline int parse_packet_key_userspace(
-    struct sk_buff *skb, 
-    struct packet_key_t *key, 
-    u8 direction
-) {
-    if (skb == NULL) {
-        return 0;
-    }
-
-    unsigned char *skb_head;
-    if(bpf_probe_read_kernel(&skb_head, sizeof(skb_head), &skb->head) < 0) {
-        return 0;
-    }
-    if (!skb_head) {
-        return 0;
-    }
-    
-    unsigned long skb_data_ptr_val; 
-    if(bpf_probe_read_kernel(&skb_data_ptr_val, sizeof(skb_data_ptr_val), &skb->data) < 0) {
-        return 0;
-    }
-    
-    unsigned int data_offset = (unsigned int)(skb_data_ptr_val - (unsigned long)skb_head);
-    unsigned int mac_offset = data_offset; 
-    
-    struct ethhdr eth;
-    if (bpf_probe_read_kernel(&eth, sizeof(eth), skb_head + mac_offset) < 0) {
-        return 0;
-    }
-    
-    unsigned int net_offset = mac_offset + ETH_HLEN;
-    __be16 h_proto = eth.h_proto;
-    
-    // Handle VLAN tags
-    if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-        net_offset += VLAN_HLEN; 
-        if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + ETH_HLEN + 2) < 0) { 
-            return 0;
-        }
-        if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
-             net_offset += VLAN_HLEN;
-             if (bpf_probe_read_kernel(&h_proto, sizeof(h_proto), skb_head + mac_offset + (2 * VLAN_HLEN) + 2) < 0) {
-                 return 0;
-             }
-        }
-    }
-    
-    if (h_proto != htons(ETH_P_IP)) {
-        return 0;
-    }
-    
-    struct iphdr ip;
-    if (bpf_probe_read_kernel(&ip, sizeof(ip), skb_head + net_offset) < 0) {
-        return 0;
-    }
-    
-    key->sip = ip.saddr;
-    key->dip = ip.daddr;
-    key->proto = ip.protocol;
-    
-    // Apply filters
-    if (PROTOCOL_FILTER != 0 && ip.protocol != PROTOCOL_FILTER) {
-        return 0;
-    }
-
-    // Apply IP filters - use exact matching for packet direction
-    if (SRC_IP_FILTER != 0 && ip.saddr != SRC_IP_FILTER) {
-        return 0;
-    }
-    if (DST_IP_FILTER != 0 && ip.daddr != DST_IP_FILTER) {
-        return 0;
-    }
-
-    u8 ip_ihl = ip.ihl & 0x0F;  
-    if (ip_ihl < 5) {  
-        return 0;
-    }
-
-    unsigned int trans_offset = net_offset + (ip_ihl * 4);
-    
-    // Parse transport layer
-    switch (ip.protocol) {
-        case IPPROTO_TCP: {
-            struct tcphdr tcp;
-            if (bpf_probe_read_kernel(&tcp, sizeof(tcp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            
-            key->tcp.source = tcp.source;
-            key->tcp.dest = tcp.dest;
-            key->tcp.seq = tcp.seq;
-            
-            if (SRC_PORT_FILTER != 0 && tcp.source != htons(SRC_PORT_FILTER) && tcp.dest != htons(SRC_PORT_FILTER)) {
-                return 0;
-            }
-            if (DST_PORT_FILTER != 0 && tcp.source != htons(DST_PORT_FILTER) && tcp.dest != htons(DST_PORT_FILTER)) {
-                return 0;
-            }
-            break;
-        }
-        case IPPROTO_UDP: {
-            key->udp.id = ip.id;
-            
-            struct udphdr udp;
-            if (bpf_probe_read_kernel(&udp, sizeof(udp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            key->udp.source = udp.source;
-            key->udp.dest = udp.dest;
-            
-            if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
-                return 0;
-            }
-            if (DST_PORT_FILTER != 0 && key->udp.source != htons(DST_PORT_FILTER) && key->udp.dest != htons(DST_PORT_FILTER)) {
-                return 0;
-            }
-            break;
-        }
-        case IPPROTO_ICMP: {
-            struct icmphdr icmp;
-            if (bpf_probe_read_kernel(&icmp, sizeof(icmp), skb_head + trans_offset) < 0) {
-                return 0;
-            }
-            
-            key->icmp.id = icmp.un.echo.id;
-            key->icmp.sequence = icmp.un.echo.sequence;
-            key->icmp.type = icmp.type;
-            key->icmp.code = icmp.code;
             break;
         }
         default:
@@ -520,28 +410,21 @@ static __always_inline int parse_packet_key_userspace(
 static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u8 stage_id, u8 direction) {
     struct packet_key_t key = {};
     u64 current_ts = bpf_ktime_get_ns();
-    
+
     // Parse packet key
-    int parse_success = 0;
-    if (stage_id == STG_OVS_USERSPACE_RX || stage_id == STG_OVS_USERSPACE_TX) {
-        parse_success = parse_packet_key_userspace(skb, &key, direction);
-    } else {
-        parse_success = parse_packet_key(skb, &key, direction);
-    }
-    
-    if (!parse_success) {
+    if (!parse_packet_key(skb, &key, direction)) {
         return;
     }
-    
+
     // Check if this is the first stage for this direction
     bool is_first_stage = false;
     if ((direction == 1 && stage_id == STG_VNET_RX) ||
         (direction == 2 && stage_id == STG_PHY_RX)) {
         is_first_stage = true;
     }
-    
+
     struct flow_data_t *flow_ptr;
-    
+
     if (is_first_stage) {
         // Initialize new flow tracking
         struct flow_data_t zero = {};
@@ -549,15 +432,15 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
         zero.last_stage = 0;
         zero.last_timestamp = 0;
         zero.first_timestamp = current_ts;  // Record first stage timestamp
-        
+
         flow_sessions.delete(&key);
         flow_ptr = flow_sessions.lookup_or_try_init(&key, &zero);
-        
+
         if (flow_ptr) {
             u32 idx = direction;
             u64 *counter = packet_counters.lookup(&idx);
             if (counter) (*counter)++;
-            
+
             // Count first stage
             u32 first_stage_idx = (direction == 1) ? 0 : 2;  // 0=first_stage_rx, 2=first_stage_tx
             u64 *first_counter = flow_stage_counters.lookup(&first_stage_idx);
@@ -566,35 +449,43 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
     } else {
         flow_ptr = flow_sessions.lookup(&key);
     }
-    
+
     if (!flow_ptr) {
         flow_sessions.delete(&key);
         return;
     }
     
+#if STAGE_LATENCY_MODE
     // Calculate and submit latency for adjacent stages
+    // Only record forward-progressing transitions to filter OVS conntrack re-injection
+    // OVS ct() action may be called multiple times (commit, NAT), causing repeated CT stages
     if (flow_ptr->last_stage > 0 && flow_ptr->last_timestamp > 0) {
-        u64 prev_ts = flow_ptr->last_timestamp;
-        
-        if (current_ts > prev_ts) {
-            u64 latency_ns = current_ts - prev_ts;
+        // Only record and update for forward transitions
+        if (stage_id > flow_ptr->last_stage && current_ts > flow_ptr->last_timestamp) {
+            u64 latency_ns = current_ts - flow_ptr->last_timestamp;
             u64 latency_us = latency_ns / 1000;
-            
+
             // Create stage pair key with latency bucket
             struct stage_pair_key_t pair_key = {};
             pair_key.prev_stage = flow_ptr->last_stage;
             pair_key.curr_stage = stage_id;
             pair_key.direction = direction;
             pair_key.latency_bucket = bpf_log2l(latency_us + 1);
-            
+
             // Update histogram
             adjacent_latency_hist.increment(pair_key, 1);
+
+            // Only update tracking state for forward transitions
+            flow_ptr->last_stage = stage_id;
+            flow_ptr->last_timestamp = current_ts;
         }
+        // Backward/equal transitions ignored (OVS conntrack re-injection)
+    } else {
+        // First stage after flow start - always update
+        flow_ptr->last_stage = stage_id;
+        flow_ptr->last_timestamp = current_ts;
     }
-    
-    // Update tracking for next stage
-    flow_ptr->last_stage = stage_id;
-    flow_ptr->last_timestamp = current_ts;
+#endif
     
     // Check if this is the last stage
     bool is_last_stage = false;
@@ -611,6 +502,24 @@ static __always_inline void handle_stage_event(void *ctx, struct sk_buff *skb, u
             if (latency_us > 0) {
                 u8 log2_latency = bpf_log2l(latency_us);
                 total_latency_hist.increment(log2_latency);
+
+                // Per-flow total latency histogram
+                struct flow_bucket_key_t fb_key = {};
+                fb_key.flow.sip = key.sip;
+                fb_key.flow.dip = key.dip;
+                fb_key.flow.protocol = key.proto;
+                if (key.proto == IPPROTO_TCP) {
+                    fb_key.flow.sport = key.tcp.source;
+                    fb_key.flow.dport = key.tcp.dest;
+                } else if (key.proto == IPPROTO_UDP) {
+                    fb_key.flow.sport = key.udp.source;
+                    fb_key.flow.dport = key.udp.dest;
+                } else if (key.proto == IPPROTO_ICMP) {
+                    fb_key.flow.sport = key.icmp.id;
+                    fb_key.flow.dport = key.icmp.sequence;
+                }
+                fb_key.latency_bucket = log2_latency;
+                flow_total_hist.increment(fb_key, 1);
             }
         }
         
@@ -645,9 +554,10 @@ RAW_TRACEPOINT_PROBE(netif_receive_skb) {
     return 0;
 }
 
+#if STAGE_LATENCY_MODE
 int kprobe__ovs_vport_receive(struct pt_regs *ctx, void *vport, struct sk_buff *skb, void *tun_info) {
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_OVS_RX, 1);
     }
@@ -659,50 +569,24 @@ int kprobe__ovs_vport_receive(struct pt_regs *ctx, void *vport, struct sk_buff *
 
 int kprobe__nf_conntrack_in(struct pt_regs *ctx, struct net *net, u_int8_t pf, unsigned int hooknum, struct sk_buff *skb) {
     if (!skb) return 0;
-    
+
     if (DIRECTION_FILTER != 2) {
         handle_stage_event(ctx, skb, STG_CT_RX, 1);
     }
     if (DIRECTION_FILTER != 1) {
         handle_stage_event(ctx, skb, STG_CT_TX, 2);
     }
-    
+
     return 0;
 }
+#endif
 
-int kprobe__ovs_dp_upcall(struct pt_regs *ctx, void *dp, const struct sk_buff *skb_const) {
-    struct sk_buff *skb = (struct sk_buff *)skb_const;
-    if (!skb) return 0;
-    
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, STG_OVS_UPCALL_RX, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, STG_OVS_UPCALL_TX, 2);
-    }
-    
-    return 0;
-}
-
-int kprobe__ovs_flow_key_extract_userspace(struct pt_regs *ctx, struct net *net, const struct nlattr *attr, struct sk_buff *skb) {
-    if (!skb) return 0;
-    
-    if (DIRECTION_FILTER != 2) {
-        handle_stage_event(ctx, skb, STG_OVS_USERSPACE_RX, 1);
-    }
-    if (DIRECTION_FILTER != 1) {
-        handle_stage_event(ctx, skb, STG_OVS_USERSPACE_TX, 2);
-    }
-    
-    return 0;
-}
-
+#if STAGE_LATENCY_MODE
 // Manual attach - function name varies by kernel/compiler (GCC clone suffixes)
 int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info, void *key, bool post_ct, bool keep_nat_flags) {
     if (!skb) return 0;
 
     if (post_ct) {
-        // Conntrack action phase
         if (DIRECTION_FILTER != 2) {
             handle_stage_event(ctx, skb, STG_CT_OUT_RX, 1);
         }
@@ -710,7 +594,6 @@ int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info
             handle_stage_event(ctx, skb, STG_CT_OUT_TX, 2);
         }
     } else {
-        // Flow extract phase
         if (DIRECTION_FILTER != 2) {
             handle_stage_event(ctx, skb, STG_FLOW_EXTRACT_END_RX, 1);
         }
@@ -726,58 +609,63 @@ int trace_ovs_ct_update_key(struct pt_regs *ctx, struct sk_buff *skb, void *info
 RAW_TRACEPOINT_PROBE(net_dev_queue) {
     struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_QDISC_ENQ, 1);
     }
-    
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
         handle_stage_event(ctx, skb, STG_VNET_QDISC_ENQ, 2);
     }
-    
+
     return 0;
 }
 
-// Qdisc dequeue tracepoint 
+// Qdisc dequeue tracepoint
 RAW_TRACEPOINT_PROBE(qdisc_dequeue) {
     struct sk_buff *skb = (struct sk_buff *)ctx->args[3];
     if (!skb) return 0;
-    
+
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_QDISC_DEQ, 1);
     }
-    
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
         handle_stage_event(ctx, skb, STG_VNET_QDISC_DEQ, 2);
     }
-    
+
     return 0;
 }
+#endif
 
 int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
     if (!skb) return 0;
-    
+
+#if STAGE_LATENCY_MODE
     if (is_target_phy_interface(skb)) {
         if (DIRECTION_FILTER == 2) return 0;
         handle_stage_event(ctx, skb, STG_TX_QUEUE, 1);
     }
-    
+#endif
+
     if (is_target_vm_interface(skb)) {
         if (DIRECTION_FILTER == 1) return 0;
         handle_stage_event(ctx, skb, STG_VNET_TX, 2);
     }
-    
+
     return 0;
 }
 
-int kprobe__dev_queue_xmit_nit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    // args: skb, rc, dev, len
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb || !is_target_phy_interface(skb)) return 0;
     if (DIRECTION_FILTER == 2) return 0;
-    
+
     handle_stage_event(ctx, skb, STG_TX_XMIT, 1);
     return 0;
 }
@@ -795,6 +683,165 @@ class StagePairKey(ctypes.Structure):
         ("direction", ctypes.c_uint8),
         ("pad", ctypes.c_uint8)
     ]
+
+# ctypes structures for per-flow total latency
+class FlowKey(ctypes.Structure):
+    _fields_ = [
+        ("sip", ctypes.c_uint32),
+        ("dip", ctypes.c_uint32),
+        ("sport", ctypes.c_uint16),
+        ("dport", ctypes.c_uint16),
+        ("protocol", ctypes.c_uint8),
+        ("pad", ctypes.c_uint8 * 3),
+    ]
+
+class FlowBucketKey(ctypes.Structure):
+    _fields_ = [
+        ("flow", FlowKey),
+        ("latency_bucket", ctypes.c_uint8),
+        ("pad", ctypes.c_uint8 * 3),
+    ]
+
+def format_protocol(proto):
+    """Convert protocol number to name"""
+    proto_names = {6: "TCP", 17: "UDP", 1: "ICMP"}
+    return proto_names.get(proto, "PROTO_%d" % proto)
+
+def bucket_range_str(bucket):
+    """Convert log2 bucket to human-readable latency range string"""
+    if bucket == 0:
+        return "1us"
+    low = 1 << (bucket - 1)
+    high = (1 << bucket) - 1
+    # Use more readable units for large values
+    if low >= 1000000:
+        return "%gs-%gs" % (low / 1000000.0, high / 1000000.0)
+    elif low >= 1000:
+        return "%g-%gms" % (low / 1000.0, high / 1000.0)
+    return "%d-%dus" % (low, high)
+
+def bucket_midpoint_us(bucket):
+    """Approximate midpoint of a log2 bucket in microseconds"""
+    if bucket == 0:
+        return 0.5
+    return 1.5 * (1 << (bucket - 1))
+
+def compute_flow_stats(bucket_counts):
+    """Compute statistics from a dict of {bucket: count}.
+
+    Returns dict with keys: count, avg, p50, p90, p99, min_bucket, max_bucket
+    """
+    total = sum(bucket_counts.values())
+    if total == 0:
+        return None
+
+    sorted_buckets = sorted(bucket_counts.items())
+    min_bucket = sorted_buckets[0][0]
+    max_bucket = sorted_buckets[-1][0]
+
+    # Weighted average
+    weighted_sum = sum(bucket_midpoint_us(b) * c for b, c in sorted_buckets)
+    avg = weighted_sum / total
+
+    # Percentiles from CDF
+    percentiles = {"p50": 0.50, "p90": 0.90, "p99": 0.99}
+    result = {"count": total, "avg": avg, "min_bucket": min_bucket, "max_bucket": max_bucket}
+
+    cumulative = 0
+    pct_keys = sorted(percentiles.keys(), key=lambda k: percentiles[k])
+    pct_idx = 0
+    for bucket, count in sorted_buckets:
+        cumulative += count
+        while pct_idx < len(pct_keys) and cumulative >= percentiles[pct_keys[pct_idx]] * total:
+            result[pct_keys[pct_idx]] = bucket
+            pct_idx += 1
+    # Fill remaining percentiles with max bucket
+    while pct_idx < len(pct_keys):
+        result[pct_keys[pct_idx]] = max_bucket
+        pct_idx += 1
+
+    return result
+
+def print_per_flow_stats(b, sort_by, top_n):
+    """Read flow_total_hist and print per-flow latency statistics"""
+    flow_hist = b["flow_total_hist"]
+
+    # Group by flow
+    flow_data = {}  # (sip, dip, sport, dport, proto) -> {bucket: count}
+    for k, v in flow_hist.items():
+        fk = k.flow
+        flow_tuple = (fk.sip, fk.dip, fk.sport, fk.dport, fk.protocol)
+        bucket = k.latency_bucket
+        count = v.value if hasattr(v, 'value') else int(v)
+        if count <= 0:
+            continue
+        if flow_tuple not in flow_data:
+            flow_data[flow_tuple] = {}
+        flow_data[flow_tuple][bucket] = count
+
+    if not flow_data:
+        print("\n  No per-flow total latency data collected in this interval")
+        return
+
+    # Compute stats per flow
+    flow_stats = []
+    for flow_tuple, buckets in flow_data.items():
+        stats = compute_flow_stats(buckets)
+        if stats:
+            flow_stats.append((flow_tuple, stats, buckets))
+
+    # Sort
+    sort_key_map = {
+        "count": lambda x: x[1]["count"],
+        "avg":   lambda x: x[1]["avg"],
+        "p90":   lambda x: x[1].get("p90", 0),
+        "p99":   lambda x: x[1].get("p99", 0),
+    }
+    key_fn = sort_key_map.get(sort_by, sort_key_map["count"])
+    flow_stats.sort(key=key_fn, reverse=True)
+
+    shown = min(top_n, len(flow_stats))
+    print("\nPer-Flow Total Latency Statistics (approx values from log2 histogram):")
+    print("  Flows: %d, Sorted by: %s (desc), Showing top %d" % (len(flow_stats), sort_by, shown))
+
+    for idx, (flow_tuple, stats, buckets) in enumerate(flow_stats[:shown]):
+        sip, dip, sport, dport, proto = flow_tuple
+        sip_str = format_ip(sip)
+        dip_str = format_ip(dip)
+        proto_str = format_protocol(proto)
+
+        # Ports are in network byte order, convert to host order
+        sport_h = socket.ntohs(sport)
+        dport_h = socket.ntohs(dport)
+
+        if proto == 1:  # ICMP: sport=id, dport=seq
+            flow_label = "%s -> %s (%s id=%d seq=%d)" % (
+                sip_str, dip_str, proto_str, sport_h, dport_h)
+        else:
+            flow_label = "%s:%d -> %s:%d (%s)" % (
+                sip_str, sport_h, dip_str, dport_h, proto_str)
+
+        avg_str = "%dus" % int(stats["avg"]) if stats["avg"] < 1000 else "%.1fms" % (stats["avg"] / 1000)
+        p50_str = bucket_range_str(stats["p50"])
+        p90_str = bucket_range_str(stats["p90"])
+        p99_str = bucket_range_str(stats["p99"])
+        min_str = bucket_range_str(stats["min_bucket"])
+        max_str = bucket_range_str(stats["max_bucket"])
+
+        print("\n  #%d  %s" % (idx + 1, flow_label))
+        print("      Count: %-6d Avg~: %-8s P50~: %-12s P90~: %-12s P99~: %-12s Min: %-12s Max: %s" % (
+            stats["count"], avg_str, p50_str, p90_str, p99_str, min_str, max_str))
+
+        # Print histogram for this flow
+        sorted_buckets = sorted(buckets.items())
+        max_count = max(buckets.values())
+        print("      Latency distribution:")
+        for bucket, count in sorted_buckets:
+            if count > 0:
+                range_str = bucket_range_str(bucket)
+                bar_width = int(40 * count / max_count)
+                bar = "*" * bar_width
+                print("        %-12s: %6d |%-40s|" % (range_str, count, bar))
 
 # Helper Functions
 def get_if_index(devname):
@@ -833,42 +880,139 @@ def get_stage_name(stage_id):
     """Get human-readable stage name"""
     stage_names = {
         # VNET RX path (VM TX, packets from VM to external)
+        # Note: Upcall stages removed - use ovs_upcall_latency_summary.py for upcall latency
         1: "VNET_RX",
-        2: "OVS_RX", 
+        2: "OVS_RX",
         3: "FLOW_EXTRACT_END_RX",
-        4: "OVS_UPCALL_RX",
-        5: "OVS_USERSPACE_RX",
-        6: "CT_RX",
-        7: "CT_OUT_RX",
-        8: "QDISC_ENQ",
-        9: "QDISC_DEQ",
-        10: "TX_QUEUE",
-        11: "TX_XMIT",
-        
+        4: "CT_RX",
+        5: "CT_OUT_RX",
+        6: "QDISC_ENQ",
+        7: "QDISC_DEQ",
+        8: "TX_QUEUE",
+        9: "TX_XMIT",
+
         # VNET TX path (VM RX, packets from external to VM)
-        12: "PHY_RX",
-        13: "OVS_TX",
-        14: "FLOW_EXTRACT_END_TX",
-        15: "OVS_UPCALL_TX",
-        16: "OVS_USERSPACE_TX",
-        17: "CT_TX",
-        18: "CT_OUT_TX",
-        19: "VNET_QDISC_ENQ",
-        20: "VNET_QDISC_DEQ",
-        21: "VNET_TX"
+        10: "PHY_RX",
+        11: "OVS_TX",
+        12: "FLOW_EXTRACT_END_TX",
+        13: "CT_TX",
+        14: "CT_OUT_TX",
+        15: "VNET_QDISC_ENQ",
+        16: "VNET_QDISC_DEQ",
+        17: "VNET_TX"
     }
     return stage_names.get(stage_id, "UNKNOWN_%d" % stage_id)
 
-def print_histogram_summary(b, interval_start_time):
+def _print_counters_and_total(b, sort_by, top_n):
+    """Print packet counters, total latency histogram, and per-flow stats"""
+    # Print packet counters
+    counters = b["packet_counters"]
+    print("\nPacket Counters:")
+    print("  VM TX packets: %d" % counters[1].value)
+    print("  VM RX packets: %d" % counters[2].value)
+
+    # Calculate incomplete flows using counter method
+    flow_counters = b["flow_stage_counters"]
+
+    first_stage_rx = flow_counters[0].value
+    last_stage_rx = flow_counters[1].value
+    first_stage_tx = flow_counters[2].value
+    last_stage_tx = flow_counters[3].value
+
+    incomplete_rx_count = first_stage_rx - last_stage_rx
+    incomplete_tx_count = first_stage_tx - last_stage_tx
+
+    print("\nFlow Session Analysis (Counter-based):")
+    print("  VM TX started: %d, completed: %d, incomplete: %d" % (
+        first_stage_rx, last_stage_rx, incomplete_rx_count))
+    print("  VM RX started: %d, completed: %d, incomplete: %d" % (
+        first_stage_tx, last_stage_tx, incomplete_tx_count))
+
+    total_active_flows = 0
+    try:
+        flow_sessions = b["flow_sessions"]
+        total_active_flows = len(flow_sessions)
+    except:
+        total_active_flows = -1
+
+    if total_active_flows >= 0:
+        print("  Currently active flow sessions: %d" % total_active_flows)
+    else:
+        print("  Flow sessions table not accessible")
+
+    # Display total latency histogram (end-to-end latency)
+    print("\nTotal End-to-End Latency Distribution (First Stage -> Last Stage):")
+    print("-" * 60)
+
+    try:
+        total_hist = b["total_latency_hist"]
+        total_latency_data = {}
+
+        for k, v in total_hist.items():
+            bucket = k.value if hasattr(k, 'value') else int(k)
+            count = v.value if hasattr(v, 'value') else int(v)
+            if count > 0:
+                total_latency_data[bucket] = count
+
+        if total_latency_data:
+            max_count = max(total_latency_data.values())
+
+            for bucket in sorted(total_latency_data.keys()):
+                count = total_latency_data[bucket]
+
+                if bucket == 0:
+                    range_str = "1us"
+                else:
+                    low = 1 << (bucket - 1)
+                    high = (1 << bucket) - 1
+                    range_str = "%d-%dus" % (low, high)
+
+                bar_width = int(40 * count / max_count)
+                bar = "*" * bar_width
+
+                print("  %-12s: %6d |%-40s|" % (range_str, count, bar))
+        else:
+            print("  No total latency data collected in this interval")
+    except Exception as e:
+        print("  Error reading total latency histogram: %s" % str(e))
+
+    # Per-flow total latency statistics
+    try:
+        print_per_flow_stats(b, sort_by, top_n)
+    except Exception as e:
+        print("  Error reading per-flow latency data: %s" % str(e))
+
+    # Clear total/flow histograms for next interval
+    try:
+        b["total_latency_hist"].clear()
+    except:
+        pass
+    try:
+        b["flow_total_hist"].clear()
+    except:
+        pass
+
+def print_histogram_summary(b, interval_start_time, sort_by="count", top_n=10, stage_latency=False):
     """Print histogram summary for the current interval"""
     current_time = datetime.datetime.now()
     print("\n" + "=" * 80)
-    print("[%s] Adjacent Stage Latency Report (Interval: %.1fs)" % (
-        current_time.strftime("%Y-%m-%d %H:%M:%S"),
-        time_time() - interval_start_time
-    ))
+    if stage_latency:
+        print("[%s] Stage + Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
+    else:
+        print("[%s] Flow Latency Report (Interval: %.1fs)" % (
+            current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            time_time() - interval_start_time
+        ))
     print("=" * 80)
-    
+
+    if not stage_latency:
+        # Skip stage pair histogram, go directly to counters and total latency
+        _print_counters_and_total(b, sort_by, top_n)
+        return
+
     # Get stage pair histogram data
     latency_hist = b["adjacent_latency_hist"]
     
@@ -944,88 +1088,10 @@ def print_histogram_summary(b, interval_start_time):
                     
                     print("      %-12s: %6d |%-40s|" % (range_str, count, bar))
     
-    # Print packet counters
-    counters = b["packet_counters"]
-    print("\nPacket Counters:")
-    print("  VM TX packets: %d" % counters[1].value)
-    print("  VM RX packets: %d" % counters[2].value)
-    
-    # Calculate incomplete flows using counter method
-    flow_counters = b["flow_stage_counters"]
-    
-    first_stage_rx = flow_counters[0].value    # Count of flows that started (VNET_RX)
-    last_stage_rx = flow_counters[1].value     # Count of flows that completed (TX_XMIT) 
-    first_stage_tx = flow_counters[2].value    # Count of flows that started (PHY_RX)
-    last_stage_tx = flow_counters[3].value     # Count of flows that completed (VNET_TX)
-    
-    incomplete_rx_count = first_stage_rx - last_stage_rx
-    incomplete_tx_count = first_stage_tx - last_stage_tx
-    
-    print("\nFlow Session Analysis (Counter-based):")
-    print("  VM TX started: %d, completed: %d, incomplete: %d" % (
-        first_stage_rx, last_stage_rx, incomplete_rx_count))
-    print("  VM RX started: %d, completed: %d, incomplete: %d" % (
-        first_stage_tx, last_stage_tx, incomplete_tx_count))
-    
-    # Also try to check flow_sessions table for additional debug info
-    total_active_flows = 0
-    try:
-        flow_sessions = b["flow_sessions"]
-        total_active_flows = len(flow_sessions)
-    except:
-        total_active_flows = -1
-    
-    if total_active_flows >= 0:
-        print("  Currently active flow sessions: %d" % total_active_flows)
-    else:
-        print("  Flow sessions table not accessible")
-    
-    # Display total latency histogram (end-to-end latency)
-    print("\nTotal End-to-End Latency Distribution (First Stage -> Last Stage):")
-    print("-" * 60)
-    
-    try:
-        total_hist = b["total_latency_hist"]
-        total_latency_data = {}
-        
-        for k, v in total_hist.items():
-            bucket = k.value if hasattr(k, 'value') else int(k)
-            count = v.value if hasattr(v, 'value') else int(v)
-            if count > 0:
-                total_latency_data[bucket] = count
-        
-        if total_latency_data:
-            max_count = max(total_latency_data.values())
-            
-            for bucket in sorted(total_latency_data.keys()):
-                count = total_latency_data[bucket]
-                
-                # Calculate latency range for this bucket
-                if bucket == 0:
-                    range_str = "1us"
-                else:
-                    low = 1 << (bucket - 1)  # 2^(bucket-1)
-                    high = (1 << bucket) - 1  # 2^bucket - 1
-                    range_str = "%d-%dus" % (low, high)
-                
-                # Create simple bar graph
-                bar_width = int(40 * count / max_count)
-                bar = "*" * bar_width
-                
-                print("  %-12s: %6d |%-40s|" % (range_str, count, bar))
-        else:
-            print("  No total latency data collected in this interval")
-    except Exception as e:
-        print("  Error reading total latency histogram: %s" % str(e))
-    
-    
-    # Clear histograms for next interval
+    _print_counters_and_total(b, sort_by, top_n)
+
+    # Clear stage latency histogram for next interval
     latency_hist.clear()
-    try:
-        total_hist = b["total_latency_hist"]
-        total_hist.clear()
-    except:
-        pass
 
 def main():
     if os.geteuid() != 0:
@@ -1070,7 +1136,13 @@ Examples:
                         help='Statistics output interval in seconds (default: 5)')
     parser.add_argument('--enable-ct', action='store_true',
                         help='Enable conntrack measurement (enabled by default)')
-    
+    parser.add_argument('--stage-latency', action='store_true',
+                        help='Enable per-stage adjacent latency measurement (adds ~10 probes, higher overhead)')
+    parser.add_argument('--sort-by', type=str, choices=['count', 'avg', 'p90', 'p99'],
+                        default='count', help='Sort per-flow stats by metric (default: count)')
+    parser.add_argument('--top', type=int, default=10,
+                        help='Number of top flows to display (default: 10)')
+
     args = parser.parse_args()
     
     # Convert parameters
@@ -1120,32 +1192,37 @@ Examples:
     print("VM interface: %s (ifindex %d)" % (args.vm_interface, vm_ifindex))
     print("Physical interfaces: %s (ifindex %d, %d)" % (args.phy_interface, phy_ifindex1, phy_ifindex2))
     print("Statistics interval: %d seconds" % args.interval)
-    print("Conntrack measurement: ENABLED")
-    print("Mode: Adjacent stage latency tracking only")
-    
+    stage_latency_mode = 1 if args.stage_latency else 0
+    if args.stage_latency:
+        print("Per-stage latency: ENABLED")
+    print("Per-flow stats: sort-by=%s, top=%d" % (args.sort_by, args.top))
+    if args.stage_latency:
+        print("Mode: Per-flow + per-stage latency breakdown")
+    else:
+        print("Mode: Per-flow latency statistics")
+
     try:
         b = BPF(text=bpf_text % (
             src_ip_hex, dst_ip_hex, src_port, dst_port,
-            protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2, direction_filter
+            protocol_filter, vm_ifindex, phy_ifindex1, phy_ifindex2,
+            direction_filter, stage_latency_mode
         ))
         print("BPF program loaded successfully")
     except Exception as e:
         print("Error loading BPF program: %s" % e)
         sys.exit(1)
 
-    # Manual attachment for ovs_ct_update_key (function name varies by kernel/compiler)
-    # GCC may generate optimized clones: .isra.N, .constprop.N, .part.N
-    ovs_ct_func = find_kernel_function("ovs_ct_update_key")
-    if ovs_ct_func:
-        try:
-            b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
-            print("Attached kprobe to %s" % ovs_ct_func)
-        except Exception as e:
-            print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
-            print("         CT flow tracking will be disabled")
-    else:
-        print("Warning: ovs_ct_update_key not found in kallsyms")
-        print("         CT flow tracking will be disabled")
+    # Manual attachment for ovs_ct_update_key (only in stage-latency mode)
+    if args.stage_latency:
+        ovs_ct_func = find_kernel_function("ovs_ct_update_key")
+        if ovs_ct_func:
+            try:
+                b.attach_kprobe(event=ovs_ct_func, fn_name="trace_ovs_ct_update_key")
+                print("Attached kprobe to %s" % ovs_ct_func)
+            except Exception as e:
+                print("Warning: Could not attach to %s: %s" % (ovs_ct_func, e))
+        else:
+            print("Warning: ovs_ct_update_key not found in kallsyms")
     
     print("\nCollecting adjacent stage latency data... Hit Ctrl-C to end.")
     print("Statistics will be displayed every %d seconds\n" % args.interval)
@@ -1153,19 +1230,19 @@ Examples:
     # Setup signal handler for clean exit
     def signal_handler(sig, frame):
         print("\n\nFinal statistics:")
-        print_histogram_summary(b, interval_start_time)
+        print_histogram_summary(b, interval_start_time, args.sort_by, args.top, args.stage_latency)
         print("\nExiting...")
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     # Main loop
     interval_start_time = time_time()
-    
+
     try:
         while True:
             sleep(args.interval)
-            print_histogram_summary(b, interval_start_time)
+            print_histogram_summary(b, interval_start_time, args.sort_by, args.top, args.stage_latency)
             interval_start_time = time_time()
     except KeyboardInterrupt:
         pass

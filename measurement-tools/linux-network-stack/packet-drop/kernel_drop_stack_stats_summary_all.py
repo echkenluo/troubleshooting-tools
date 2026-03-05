@@ -9,6 +9,7 @@ where packets are being dropped in the kernel with detailed flow information.
 
 Usage: sudo python3 kernel_drop_stack_stats_fivetuple.py [-i INTERVAL] [-d DURATION] [-t TOP] [-n DEV] [--src IP] [--dst IP] [--src-port PORT] [--dst-port PORT] [--l4-protocol PROTO] [--max-entries NUM]
        -i INTERVAL: reporting interval in seconds (default: 10)
+                    Statistics are cleared at each interval (shows delta per interval)
        -d DURATION: total duration in seconds (default: unlimited)
        -t TOP: number of top stacks to show (default: 5)
        -n DEV: filter by device name (e.g., eth0, br-int)
@@ -574,7 +575,7 @@ def main():
 
             # Print periodic statistics
             current_time = strftime("%Y-%m-%d %H:%M:%S")
-            print("\n[%s] Cycle %d - Total drops: %d [showing top %d, grouped by: %s]" %
+            print("\n[%s] Cycle %d - Interval drops: %d [showing top %d, grouped by: %s]" %
                   (current_time, cycle, total_drops, args.top, args.group_by))
             print("-" * 60)
 
@@ -582,31 +583,42 @@ def main():
             print_histogram_stats(b, args.top, args.group_by)
             print("=" * 60)
 
+            # Clear histograms for next interval
+            if args.group_by == 'stack':
+                b["stack_hist"].clear()
+            elif args.group_by == 'fivetuple':
+                b["tuple_hist"].clear()
+            else:
+                b["drop_hist"].clear()
+                b["stack_hist"].clear()
+                b["tuple_hist"].clear()
+            b["failed_hist"].clear()
+
     except KeyboardInterrupt:
         exiting = True
 
-    # Print final statistics
+    # Print final statistics (last interval)
     print("\n" + "="*60)
-    print("%s kfree_skb Call Stack Statistics with Five-Tuple" % strftime("%Y-%m-%d %H:%M:%S"))
+    print("%s kfree_skb Call Stack Statistics - Final Interval Summary" % strftime("%Y-%m-%d %H:%M:%S"))
     print("="*60)
 
-    # Get final totals
+    # Get final interval totals (before clearing)
     drop_hist = b["drop_hist"]
     failed_hist = b["failed_hist"]
 
     total_drops = sum(count.value for count in drop_hist.values())
     total_failed = sum(count.value for count in failed_hist.values())
 
-    print("Total packet drops: %d" % total_drops)
+    print("Last interval packet drops: %d" % total_drops)
     if total_failed > 0:
-        print("Total failed stack traces: %d (%.1f%%)\n" %
+        print("Last interval failed stack traces: %d (%.1f%%)\n" %
               (total_failed, 100.0 * total_failed / (total_drops + total_failed)))
 
     if total_drops == 0:
-        print("No successful stack traces collected.")
+        print("No packet drops in last interval.")
         return
 
-    print("Top call stacks and flows causing packet drops:")
+    print("Top call stacks and flows in last interval:")
     print("-" * 40)
 
     # Sort histogram by count (descending)

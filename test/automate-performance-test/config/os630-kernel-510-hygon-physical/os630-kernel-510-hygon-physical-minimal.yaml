@@ -1,0 +1,49 @@
+# User Environment - Minimal Input Configuration
+#
+# To get VM UUIDs, run on each host:
+#   virsh list --all
+#
+version: "1.0"
+environment: "os630-kernel-510-hygon-physical"
+
+nodes:
+  # Host nodes
+  host-server:
+    ssh: "smartx@172.20.133.37"
+    workdir: "/home/smartx/lcc"
+    role: "host"
+
+  host-client:
+    ssh: "smartx@172.20.133.38"
+    workdir: "/home/smartx/lcc"
+    role: "host"
+
+  # VM nodes
+  # Note: test_ip same as SSH IP in this case (management network used for testing)
+  vm-server:
+    ssh: "smartx@172.20.225.105"
+    workdir: "/home/smartx/lcc"
+    role: "vm"
+    host_ref: "host-server"
+    uuid: "e4c11b2b-5e4e-4346-a6ec-f8b28bcf2057"
+    test_ip: "30.20.30.11"
+
+  vm-client:
+    ssh: "smartx@172.20.225.106"
+    workdir: "/home/smartx/lcc"
+    role: "vm"
+    host_ref: "host-client"
+    uuid: "41bbbc98-d001-4e47-bf58-84685e0d1509"
+    test_ip: "30.20.30.12"
+
+test_pairs:
+  host:
+    server: "host-server"
+    client: "host-client"
+  vm:
+    server: "vm-server"
+    client: "vm-client"
+
+discovery_hints:
+  internal_port_type: "storage"
+  python_interpreter: "python3"

@@ -1,0 +1,35 @@
+# Performance Test Template
+# Defines the performance tests to run during eBPF tool evaluation
+# This file is used by config_bootstrap to generate full config
+
+performance_tests:
+  # Throughput tests using iperf3
+  throughput:
+    single_stream:
+      duration: 10
+    multi_stream:
+      duration: 10
+      streams: 4
+
+  # Latency tests using netperf
+  latency:
+    duration: 10
+    tcp_rr: {}
+    udp_rr: {}
+
+  # Packets-per-second tests (small packets 64 bytes)
+  pps:
+    single_stream:
+      duration: 10
+      target_bw: "1G"
+    multi_stream:
+      duration: 10
+      streams: 4
+      target_bw: "1G"
+
+  # ICMP ping tests (bidirectional)
+  icmp_ping:
+    duration: 10
+    interval: "0.2"
+    count: 0
+    bidirectional: true

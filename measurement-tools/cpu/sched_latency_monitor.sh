@@ -136,12 +136,12 @@ processing_process() {
     log_with_timestamp "，${delay_cycles}" "$verbose"
     
     sleep "$delay_cycles"
-    
+
     {
-        echo "
-        echo "
-        echo "
-        echo "#"
+        echo "========================================"
+        echo "Scheduler Latency Monitoring Log"
+        echo "Start Time: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "========================================"
     } >> "$log_file"
     
     local processed_count=0
@@ -194,7 +194,7 @@ processing_process() {
                     
                     {
                         echo ""
-                        echo "==================== 
+                        echo "==================== End of Sample #${sample_count} ===================="
                         echo ""
                     } >> "$log_file"
                     

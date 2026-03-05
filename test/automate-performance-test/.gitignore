@@ -1,0 +1,36 @@
+# Test Results Directories
+scripts/test_results/
+results/
+fetched_results/
+
+# Generated Workflow Files
+generated_workflow.json
+test_workflow.json
+
+# Log Files
+*.log
+automation_*.log
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+measurement-results

@@ -17,14 +17,20 @@
 #     sudo ./kernel_icmp_rtt.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
 #                               --interface eth0 --latency-ms 10
 #
-# Trace stages (minimal host-only, no ip_send_skb dependency):
+#   Bond scenario (multiple slave interfaces):
+#     sudo ./kernel_icmp_rtt.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \
+#                               --interface ens4f0,ens4f1 --direction tx
+#
+# Trace stages (simplified, entry/exit only for better kernel compatibility):
 # TX mode (local -> remote):
-#   Path 1 (Request): ip_local_out -> dev_queue_xmit
-#   Path 2 (Reply):   __netif_receive_skb -> ip_rcv -> icmp_rcv
+#   Path 1 (Request): ip_local_out -> net_dev_xmit
+#   Path 2 (Reply):   netif_receive_skb -> icmp_rcv
 #
 # RX mode (remote -> local):
-#   Path 1 (Request): __netif_receive_skb -> ip_rcv -> icmp_rcv
-#   Path 2 (Reply):   ip_local_out -> dev_queue_xmit
+#   Path 1 (Request): netif_receive_skb -> icmp_rcv
+#   Path 2 (Reply):   ip_local_out -> net_dev_xmit
+#
+# Note: ip_rcv probe removed - newer kernels use list-based receive path
 
 # BCC module import with fallback
 try:
@@ -69,8 +75,10 @@ bpf_text = """
 #define SRC_IP_FILTER 0x%x
 #define DST_IP_FILTER 0x%x
 #define LATENCY_THRESHOLD_NS %d
-#define TARGET_IFINDEX %d
 #define TRACE_DIRECTION %d  // 0 for TX, 1 for RX
+
+// Multi-interface support for bond scenarios
+__IFACE_ARRAY__
 
 // Stage definitions
 // Path 1 stages: 0, 1 (TX path start/end without ip_send_skb dependency)
@@ -159,7 +167,7 @@ BPF_PERCPU_ARRAY(event_scratch_map, struct event_data_t, 1);
 
 // Helper to check interface
 static __always_inline bool is_target_ifindex(const struct sk_buff *skb) {
-    if (TARGET_IFINDEX == 0) {
+    if (IFACE_COUNT == 0) {
         return true;  // No filter
     }
 
@@ -174,7 +182,14 @@ static __always_inline bool is_target_ifindex(const struct sk_buff *skb) {
         return false;
     }
 
-    return (ifindex == TARGET_IFINDEX);
+    // Check if ifindex matches any configured interface
+    #pragma unroll
+    for (int i = 0; i < IFACE_COUNT; i++) {
+        if (target_ifindexes[i] == ifindex) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Parse packet key
@@ -394,7 +409,7 @@ static __always_inline void handle_event(void *ctx, struct sk_buff *skb,
     }
 }
 
-// Probe: ip_local_out
+// Probe: ip_local_out (kernel 4.18 and some 5.x)
 int kprobe__ip_local_out(struct pt_regs *ctx, struct net *net, struct sock *sk, struct sk_buff *skb) {
     struct packet_key_t key = {};
     u8 icmp_type = 0;
@@ -413,8 +428,31 @@ int kprobe__ip_local_out(struct pt_regs *ctx, struct net *net, struct sock *sk, 
     return 0;
 }
 
-// Probe: dev_queue_xmit
-int kprobe__dev_queue_xmit(struct pt_regs *ctx, struct sk_buff *skb) {
+// Probe: __ip_local_out (kernel 5.10+ where ip_local_out may be bypassed)
+// Some kernel builds call __ip_local_out directly from ip_push_pending_frames
+int kprobe____ip_local_out(struct pt_regs *ctx, struct net *net, struct sock *sk, struct sk_buff *skb) {
+    struct packet_key_t key = {};
+    u8 icmp_type = 0;
+
+    debug_inc(TRACE_DIRECTION == 0 ? PATH1_STAGE_0 : PATH2_STAGE_1, CODE_PROBE_ENTRY);
+
+    if (TRACE_DIRECTION == 0) {  // TX: request path (local -> remote ECHO)
+        if (parse_packet_key(skb, &key, &icmp_type, 0, 0, PATH1_STAGE_0)) {
+            handle_event(ctx, skb, PATH1_STAGE_0, &key, icmp_type);
+        }
+    } else {  // RX: reply path
+        if (parse_packet_key(skb, &key, &icmp_type, 1, 0, PATH2_STAGE_1)) {
+            handle_event(ctx, skb, PATH2_STAGE_1, &key, icmp_type);
+        }
+    }
+    return 0;
+}
+
+// Tracepoint: net_dev_xmit
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
+    if (!skb) return 0;
+
     struct packet_key_t key = {};
     u8 icmp_type = 0;
 
@@ -485,49 +523,11 @@ TRACEPOINT_PROBE(net, netif_receive_skb_entry) {
     return 0;
 }
 
-// Older kernels may miss the tracepoint; fallback kprobe
-int kprobe____netif_receive_skb_core(struct pt_regs *ctx, struct sk_buff *skb) {
-    debug_inc(TRACE_DIRECTION == 0 ? PATH2_STAGE_0 : PATH1_STAGE_0, CODE_PROBE_ENTRY);
+// NOTE: kprobe fallback removed - tracepoint net:netif_receive_skb is stable since Linux 2.6.31
+// If running on very old kernels without tracepoint, manually add kprobe to __netif_receive_skb
 
-    if (!skb) return 0;
-
-    struct packet_key_t key = {};
-    u8 icmp_type = 0;
-
-    if (TRACE_DIRECTION == 0) {  // TX: reply path (incoming echo-reply)
-        if (parse_packet_key(skb, &key, &icmp_type, 1, 1, PATH2_STAGE_0)) {
-            handle_event(ctx, skb, PATH2_STAGE_0, &key, icmp_type);
-        }
-    } else {  // RX: request path
-        if (parse_packet_key(skb, &key, &icmp_type, 0, 1, PATH1_STAGE_0)) {
-            handle_event(ctx, skb, PATH1_STAGE_0, &key, icmp_type);
-        }
-    }
-    return 0;
-}
-
-// Probe: ip_rcv
-// Kernel 4.18 signature: int ip_rcv(struct sk_buff *skb, struct net_device *dev,
-//                                    struct packet_type *pt, struct net_device *orig_dev)
-int kprobe__ip_rcv(struct pt_regs *ctx, struct sk_buff *skb,
-                   struct net_device *dev, struct packet_type *pt,
-                   struct net_device *orig_dev) {
-    struct packet_key_t key = {};
-    u8 icmp_type = 0;
-
-    debug_inc(TRACE_DIRECTION == 0 ? PATH2_STAGE_1 : PATH1_STAGE_1, CODE_PROBE_ENTRY);
-
-    if (TRACE_DIRECTION == 0) {  // TX: reply path (incoming echo-reply)
-        if (parse_packet_key(skb, &key, &icmp_type, 1, 1, PATH2_STAGE_1)) {
-            handle_event(ctx, skb, PATH2_STAGE_1, &key, icmp_type);
-        }
-    } else {  // RX: request path
-        if (parse_packet_key(skb, &key, &icmp_type, 0, 1, PATH1_STAGE_1)) {
-            handle_event(ctx, skb, PATH1_STAGE_1, &key, icmp_type);
-        }
-    }
-    return 0;
-}
+// NOTE: ip_rcv probe removed - newer kernels use list-based receive path (ip_list_rcv -> ip_rcv_core)
+// which bypasses ip_rcv. Only keeping entry (netif_receive_skb) and exit (icmp_rcv) probes.
 
 // Probe: icmp_rcv
 int kprobe__icmp_rcv(struct pt_regs *ctx, struct sk_buff *skb) {
@@ -661,21 +661,17 @@ def get_stage_name(stage_id, direction):
     """Get stage name based on direction"""
     if direction == "tx":
         stage_names = {
-            0: "P1:S0 (ip_local_out)",
-            1: "P1:S1 (dev_queue_xmit)",
-            2: "P1:S2 (unused)",
-            3: "P2:S0 (__netif_receive_skb)",
-            4: "P2:S1 (ip_rcv)",
-            5: "P2:S2 (icmp_rcv)"
+            0: "P1 (ip_local_out)",
+            1: "P1 (net_dev_xmit)",
+            3: "P2 (netif_receive_skb)",
+            5: "P2 (icmp_rcv)"
         }
     else:  # rx
         stage_names = {
-            0: "P1:S0 (__netif_receive_skb)",
-            1: "P1:S1 (ip_rcv)",
-            2: "P1:S2 (icmp_rcv)",
-            3: "P2:S0 (unused)",
-            4: "P2:S1 (ip_local_out)",
-            5: "P2:S2 (dev_queue_xmit)"
+            0: "P1 (netif_receive_skb)",
+            2: "P1 (icmp_rcv)",
+            4: "P2 (ip_local_out)",
+            5: "P2 (net_dev_xmit)"
         }
     return stage_names.get(stage_id, "Unknown")
 
@@ -754,19 +750,22 @@ def print_event(cpu, data, size):
 
     print("=" * 80)
     print("=== ICMP RTT Trace: %s (%s) ===" % (time_str, trace_dir_str))
+    # Session shows ping initiator -> ping target (user's --src-ip -> --dst-ip)
     print("Session: %s -> %s (ID: %d, Seq: %d)" % (
-        format_ip(key.sip),
-        format_ip(key.dip),
+        args.src_ip,
+        args.dst_ip,
         socket.ntohs(key.id),
         socket.ntohs(key.seq)
     ))
 
     if args.direction == "tx":
+        # TX: local sends request to remote, receives reply from remote
         path1_desc = "Path 1 (Request: TX to %s)" % args.dst_ip
         path2_desc = "Path 2 (Reply:   RX from %s)" % args.dst_ip
     else:
-        path1_desc = "Path 1 (Request: RX from %s)" % args.dst_ip
-        path2_desc = "Path 2 (Reply:   TX to %s)" % args.dst_ip
+        # RX: receive request from remote (src_ip), send reply to remote (src_ip)
+        path1_desc = "Path 1 (Request: RX from %s)" % args.src_ip
+        path2_desc = "Path 2 (Reply:   TX to %s)" % args.src_ip
 
     print("%-45s: PID=%-6d COMM=%-12s IF=%-10s ICMP_Type=%d" % (
         path1_desc,
@@ -791,21 +790,24 @@ def print_event(cpu, data, size):
             print("  Stage %d (%-40s): 0x%x" % (i, stage_name, flow.skb_ptr[i]))
 
     print("\nPath 1 Latencies (us):")
-    print_latency_segment(0, 1, flow, args.direction)
     if args.direction == "rx":
-        print_latency_segment(1, 2, flow, args.direction)
+        # RX: netif_receive_skb (0) -> icmp_rcv (2), ip_rcv (1) removed
+        print_latency_segment(0, 2, flow, args.direction)
         if flow.ts[0] > 0 and flow.ts[2] > 0:
             path1_total = format_latency(flow.ts[0], flow.ts[2])
             print("  Total Path 1: %s us" % path1_total)
     else:
+        # TX: ip_local_out (0) -> net_dev_xmit (1)
+        print_latency_segment(0, 1, flow, args.direction)
         if flow.ts[0] > 0 and flow.ts[1] > 0:
             path1_total = format_latency(flow.ts[0], flow.ts[1])
             print("  Total Path 1: %s us" % path1_total)
 
     print("\nPath 2 Latencies (us):")
     if args.direction == "tx":
-        print_latency_segment(3, 4, flow, args.direction)
-        print_latency_segment(4, 5, flow, args.direction)
+        # TX Path 2: netif_receive_skb (3) -> icmp_rcv (5)
+        # Note: ip_rcv (stage 4) removed - newer kernels use ip_list_rcv
+        print_latency_segment(3, 5, flow, args.direction)
         if flow.ts[3] > 0 and flow.ts[5] > 0:
             path2_total = format_latency(flow.ts[3], flow.ts[5])
             print("  Total Path 2: %s us" % path2_total)
@@ -855,15 +857,19 @@ Examples:
   With latency threshold:
     sudo ./kernel_icmp_rtt.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \\
                               --interface eth0 --latency-ms 10
+
+  Bond scenario (monitor multiple slave interfaces):
+    sudo ./kernel_icmp_rtt.py --src-ip 192.168.1.10 --dst-ip 192.168.1.20 \\
+                              --interface ens4f0,ens4f1 --direction tx
 """
     )
 
     parser.add_argument('--src-ip', type=str, required=True,
-                      help='Local IP address (source for TX, destination for RX)')
+                      help='Source IP of ping session (who sends echo request)')
     parser.add_argument('--dst-ip', type=str, required=True,
-                      help='Remote IP address (destination for TX, source for RX)')
+                      help='Destination IP of ping session (who receives echo request)')
     parser.add_argument('--interface', type=str, required=False, default=None,
-                      help='Network interface to monitor (optional, monitors all if not specified)')
+                      help='Network interface(s) to monitor, comma-separated for bond scenarios (e.g., "ens4f0,ens4f1"). Optional, monitors all if not specified.')
     parser.add_argument('--latency-ms', type=float, default=0,
                       help='Minimum RTT latency threshold in ms (default: 0, report all)')
     parser.add_argument('--direction', type=str, choices=["tx", "rx"], default="tx",
@@ -878,25 +884,44 @@ Examples:
     direction_val = 0 if args.direction == "tx" else 1
     debug_enable_val = 1 if args.debug else 0
 
-    ifindex = 0
+    # Parse interface(s) - support comma-separated list for bond scenarios
+    iface_indices = []
+    iface_names = []
     if args.interface:
-        try:
-            ifindex = get_if_index(args.interface)
-        except OSError as e:
-            print("Error getting interface index: %s" % e)
-            sys.exit(1)
+        iface_list = [iface.strip() for iface in args.interface.split(',')]
+        for iface in iface_list:
+            try:
+                idx = get_if_index(iface)
+                iface_indices.append(idx)
+                iface_names.append(iface)
+            except OSError as e:
+                print("Error getting interface index for '%s': %s" % (iface, e))
+                sys.exit(1)
 
-    src_ip_hex_val = ip_to_hex(args.src_ip)
-    dst_ip_hex_val = ip_to_hex(args.dst_ip)
+    # In TX mode: src-ip is local, dst-ip is remote (user sends ping)
+    # In RX mode: src-ip is remote, dst-ip is local (user receives ping)
+    # BPF code always expects: SRC_IP_FILTER = local IP, DST_IP_FILTER = remote IP
+    # So we swap the values internally for RX mode
+    if args.direction == "tx":
+        local_ip = args.src_ip
+        remote_ip = args.dst_ip
+    else:  # rx mode
+        local_ip = args.dst_ip
+        remote_ip = args.src_ip
+
+    src_ip_hex_val = ip_to_hex(local_ip)
+    dst_ip_hex_val = ip_to_hex(remote_ip)
     latency_threshold_ns_val = int(args.latency_ms * 1000000)
 
     print("=== Kernel ICMP RTT Tracer ===")
     print("Trace Direction: %s" % args.direction.upper())
-    print("SRC_IP_FILTER (Local IP): %s (0x%x)" % (args.src_ip, socket.ntohl(src_ip_hex_val)))
-    print("DST_IP_FILTER (Remote IP): %s (0x%x)" % (args.dst_ip, socket.ntohl(dst_ip_hex_val)))
+    print("Ping Session: %s -> %s" % (args.src_ip, args.dst_ip))
+    print("Local IP: %s (0x%x)" % (local_ip, socket.ntohl(src_ip_hex_val)))
+    print("Remote IP: %s (0x%x)" % (remote_ip, socket.ntohl(dst_ip_hex_val)))
 
-    if args.interface:
-        print("Monitoring interface: %s (ifindex %d)" % (args.interface, ifindex))
+    if iface_indices:
+        iface_info = ', '.join("%s(ifindex=%d)" % (n, i) for n, i in zip(iface_names, iface_indices))
+        print("Monitoring interface(s): %s" % iface_info)
     else:
         print("Monitoring all interfaces")
 
@@ -906,13 +931,27 @@ Examples:
     if args.debug:
         print("Debug counters enabled (bcc-debug-framework); will print on exit")
 
+    # Generate interface array code for BPF
+    if iface_indices:
+        iface_array_code = """
+#define IFACE_COUNT %d
+static const int target_ifindexes[IFACE_COUNT] = {%s};
+""" % (len(iface_indices), ', '.join(str(i) for i in iface_indices))
+    else:
+        iface_array_code = """
+#define IFACE_COUNT 0
+static const int target_ifindexes[1] = {0};
+"""
+
     try:
-        b = BPF(text=bpf_text % (
+        # Substitute interface array code first (string replace)
+        bpf_program = bpf_text.replace("__IFACE_ARRAY__", iface_array_code)
+        # Then substitute other parameters
+        b = BPF(text=bpf_program % (
             debug_enable_val,
             src_ip_hex_val,
             dst_ip_hex_val,
             latency_threshold_ns_val,
-            ifindex,
             direction_val
         ))
         print("\nBPF program loaded successfully")
@@ -926,7 +965,7 @@ Examples:
     print("\nVerifying probe attachments:")
     probe_functions = [
         "ip_local_out",
-        "dev_queue_xmit",
+        "__ip_local_out",
         "ip_rcv",
         "icmp_rcv"
     ]
@@ -953,6 +992,12 @@ Examples:
         tp_alt = "/sys/kernel/debug/tracing/events/net/netif_rx"
         if os.path.exists(tp_alt):
             print("  [INFO] Found alternative: netif_rx tracepoint")
+
+    tp_xmit = "/sys/kernel/debug/tracing/events/net/net_dev_xmit"
+    if os.path.exists(tp_xmit):
+        print("  [OK] net_dev_xmit tracepoint exists")
+    else:
+        print("  [WARN] net_dev_xmit tracepoint NOT found!")
 
     b["events"].open_perf_buffer(print_event)
 

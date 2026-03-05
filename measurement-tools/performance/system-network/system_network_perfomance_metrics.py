@@ -125,7 +125,7 @@ bpf_text = """
 #define STG_CT_OUT_TX        6   // ovs_ct_update_key (conntrack action)
 #define STG_PHY_QDISC_ENQ    7   // qdisc_enqueue (physical dev)
 #define STG_PHY_QDISC_DEQ    8   // qdisc_dequeue (physical dev)
-#define STG_PHY_TX           9   // dev_hard_start_xmit (physical) - LAST POINT
+#define STG_PHY_TX           9   // net:net_dev_xmit (physical) - LAST POINT
 
 // RX direction probes (EXTENDED: network -> socket)
 #define STG_PHY_RX           11  // netif_receive_skb (physical) - FIRST POINT
@@ -967,7 +967,9 @@ RAW_TRACEPOINT_PROBE(qdisc_dequeue) {
     return 0;
 }
 
-int kprobe__dev_hard_start_xmit(struct pt_regs *ctx, struct sk_buff *skb, struct net_device *dev) {
+RAW_TRACEPOINT_PROBE(net_dev_xmit) {
+    // args: skb, rc, dev, len
+    struct sk_buff *skb = (struct sk_buff *)ctx->args[0];
     if (!skb) return 0;
 
     if (is_target_phy_interface(skb)) {

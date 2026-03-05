@@ -304,14 +304,15 @@ static __always_inline int parse_packet_key_userspace(struct sk_buff *skb, struc
         }
         case IPPROTO_UDP: {
             key->udp.id = ip.id;
-            
+
             struct udphdr udp;
             if (bpf_probe_read_kernel(&udp, sizeof(udp), skb_head + trans_offset) < 0) {
                 return 0;
             }
             key->udp.source = udp.source;
             key->udp.dest = udp.dest;
-            
+            key->udp.len = udp.len;
+
             if (SRC_PORT_FILTER != 0 && key->udp.source != htons(SRC_PORT_FILTER) && key->udp.dest != htons(SRC_PORT_FILTER)) {
                 return 0;
             }
